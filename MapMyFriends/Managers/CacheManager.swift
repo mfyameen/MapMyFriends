@@ -5,17 +5,32 @@
 
 import Foundation
 
-class CacheManager {
+// MARK: - Protocol
+
+protocol CacheManaging {
+    func coordinate(for address: String) -> CachedCoordinate?
+    func store(coordinate: CachedCoordinate, for address: String)
+    func saveToDisk()
+}
+
+// MARK: - Implementation
+
+class CacheManager: CacheManaging {
     static let shared = CacheManager()
 
     private var cache: [String: CachedCoordinate] = [:]
+    private let fileURL: URL
 
-    private var cacheFileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    /// Production singleton init — uses the app's documents directory.
+    private convenience init() {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("address_cache.json")
+        self.init(fileURL: url)
     }
 
-    private init() {
+    /// Testable init — accepts a custom file URL for isolated testing.
+    init(fileURL: URL) {
+        self.fileURL = fileURL
         loadFromDisk()
     }
 
@@ -32,7 +47,7 @@ class CacheManager {
     func saveToDisk() {
         do {
             let data = try JSONEncoder().encode(cache)
-            try data.write(to: cacheFileURL, options: .atomic)
+            try data.write(to: fileURL, options: .atomic)
         } catch {
             print("[CacheManager] Failed to save cache: \(error)")
         }
@@ -41,9 +56,9 @@ class CacheManager {
     // MARK: - Private
 
     private func loadFromDisk() {
-        guard FileManager.default.fileExists(atPath: cacheFileURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            let data = try Data(contentsOf: cacheFileURL)
+            let data = try Data(contentsOf: fileURL)
             cache = try JSONDecoder().decode([String: CachedCoordinate].self, from: data)
         } catch {
             print("[CacheManager] Failed to load cache: \(error)")

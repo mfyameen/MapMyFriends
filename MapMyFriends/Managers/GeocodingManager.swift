@@ -11,8 +11,13 @@ class GeocodingManager {
     var onProgress: ((Int, Int) -> Void)?
     var onComplete: (() -> Void)?
 
+    private let cache: CacheManaging
     private var isCancelled = false
     private var currentRequest: MKGeocodingRequest?
+
+    init(cache: CacheManaging = CacheManager.shared) {
+        self.cache = cache
+    }
 
     func process(addresses: [ContactsManager.RawContactAddress]) {
         isCancelled = false
@@ -21,7 +26,7 @@ class GeocodingManager {
         var cacheMisses: [ContactsManager.RawContactAddress] = []
 
         for address in addresses {
-            if CacheManager.shared.coordinate(for: address.addressString) != nil {
+            if cache.coordinate(for: address.addressString) != nil {
                 cacheHits.append(address)
             } else {
                 cacheMisses.append(address)
@@ -30,7 +35,7 @@ class GeocodingManager {
 
         // Deliver cache hits immediately
         for address in cacheHits {
-            if let cached = CacheManager.shared.coordinate(for: address.addressString) {
+            if let cached = cache.coordinate(for: address.addressString) {
                 let contact = MappedContact(
                     contactID: address.contactID,
                     fullName: address.fullName,
@@ -55,14 +60,14 @@ class GeocodingManager {
         isCancelled = true
         currentRequest?.cancel()
         currentRequest = nil
-        CacheManager.shared.saveToDisk()
+        cache.saveToDisk()
     }
 
     // MARK: - Private
 
     private func geocodeSequentially(addresses: [ContactsManager.RawContactAddress], index: Int, total: Int) {
         guard !isCancelled, index < addresses.count else {
-            CacheManager.shared.saveToDisk()
+            cache.saveToDisk()
             onComplete?()
             return
         }
@@ -87,7 +92,7 @@ class GeocodingManager {
                     lng: coordinate.longitude,
                     cachedAt: Date()
                 )
-                CacheManager.shared.store(coordinate: cached, for: address.addressString)
+                cache.store(coordinate: cached, for: address.addressString)
 
                 let contact = MappedContact(
                     contactID: address.contactID,

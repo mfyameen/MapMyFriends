@@ -12,6 +12,7 @@ class ContactsManager {
         let fullName: String
         let addressLabel: String
         let addressString: String
+        let thumbnailImageData: Data?
     }
 
     private let store = CNContactStore()
@@ -35,6 +36,7 @@ class ContactsManager {
                 CNContactFamilyNameKey as CNKeyDescriptor,
                 CNContactPostalAddressesKey as CNKeyDescriptor,
                 CNContactIdentifierKey as CNKeyDescriptor,
+                CNContactThumbnailImageDataKey as CNKeyDescriptor,
             ]
 
             let request = CNContactFetchRequest(keysToFetch: keysToFetch)
@@ -64,7 +66,8 @@ class ContactsManager {
                             contactID: contact.identifier,
                             fullName: fullName,
                             addressLabel: label,
-                            addressString: addressString
+                            addressString: addressString,
+                            thumbnailImageData: contact.thumbnailImageData
                         ))
                     }
                 }

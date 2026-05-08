@@ -11,4 +11,5 @@ struct MappedContact: Sendable {
     let addressLabel: String
     let addressString: String
     let coordinate: CLLocationCoordinate2D
+    let thumbnailImageData: Data?
 }

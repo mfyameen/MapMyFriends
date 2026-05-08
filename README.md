@@ -2,6 +2,10 @@
 
 An iOS app that reads your phone contacts, geocodes their addresses, and plots them as clustered pins on a full-screen map. Your location is shown as a blue dot. Tap a pin to see the contact's name and address type. All geocoding results are cached locally so subsequent launches are near-instant.
 
+Made lovingly by @mfyameen with AI
+Entirely open-source
+Code available at https://github.com/mfyameen/MapMyFriends
+
 **No third-party dependencies.** Built entirely with Apple frameworks.
 
 ## Screenshots
@@ -28,7 +32,7 @@ An iOS app that reads your phone contacts, geocodes their addresses, and plots t
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/MapMyFriends.git
+   git clone https://github.com/mfyameen/MapMyFriends.git
    ```
 2. Open `MapMyFriends.xcodeproj` in Xcode
 3. Select a development team under **Signing & Capabilities**
@@ -108,4 +112,4 @@ xcodebuild -scheme MapMyFriendsTests -destination 'platform=iOS Simulator,name=i
 
 ## License
 
-<!-- Add your license here -->
+<!-- MIT license -->

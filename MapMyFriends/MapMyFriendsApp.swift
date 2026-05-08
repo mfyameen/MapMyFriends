@@ -11,7 +11,8 @@ import SwiftUI
 struct MapMyFriendsApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MapViewControllerWrapper()
+                .ignoresSafeArea()
         }
     }
 }

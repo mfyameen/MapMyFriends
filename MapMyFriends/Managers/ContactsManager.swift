@@ -72,7 +72,9 @@ class ContactsManager {
                     }
                 }
             } catch {
+                #if DEBUG
                 print("[ContactsManager] Failed to fetch contacts: \(error)")
+                #endif
             }
 
             let finalResults = results

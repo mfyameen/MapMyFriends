@@ -3,6 +3,7 @@
 //  MapMyFriends
 //
 
+import Contacts
 import MapKit
 import UIKit
 
@@ -18,6 +19,7 @@ class MapViewController: UIViewController {
     private var progressBanner: UIView?
     private var progressLabel: UILabel?
     private var didCenterOnUser = false
+    private var isRefreshing = false
 
     // MARK: - Lifecycle
 
@@ -29,7 +31,12 @@ class MapViewController: UIViewController {
         setupMapView()
         setupGeocodingCallbacks()
         setupLocationManager()
+        observeContactChanges()
         loadContacts()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - Map Setup
@@ -64,6 +71,22 @@ class MapViewController: UIViewController {
         locationManager.requestWhenInUseAuthorization()
     }
 
+    // MARK: - Contact Change Observation
+
+    private func observeContactChanges() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(contactStoreDidChange),
+            name: .CNContactStoreDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func contactStoreDidChange(_ notification: Notification) {
+        guard !isRefreshing else { return }
+        refreshContacts()
+    }
+
     // MARK: - Contacts & Geocoding
 
     private func loadContacts() {
@@ -74,6 +97,35 @@ class MapViewController: UIViewController {
                 return
             }
             self.geocodingManager.process(addresses: rawAddresses)
+        }
+    }
+
+    private func refreshContacts() {
+        isRefreshing = true
+        geocodingManager.cancel()
+
+        contactsManager.requestAccessAndFetch { [weak self] rawAddresses in
+            guard let self else { return }
+            self.diffAndUpdate(newAddresses: rawAddresses)
+            self.isRefreshing = false
+        }
+    }
+
+    private func diffAndUpdate(newAddresses: [ContactsManager.RawContactAddress]) {
+        let existingAnnotations = mapView.annotations.compactMap { $0 as? ContactAnnotation }
+        let existingContacts = existingAnnotations.map { $0.mappedContact }
+
+        let result = ContactDiffer.diff(newAddresses: newAddresses, existing: existingContacts)
+
+        // Remove stale annotations
+        let annotationsToRemove = result.toRemoveIndices.map { existingAnnotations[$0] }
+        if !annotationsToRemove.isEmpty {
+            mapView.removeAnnotations(annotationsToRemove)
+        }
+
+        // Geocode and add new addresses
+        if !result.toAdd.isEmpty {
+            geocodingManager.process(addresses: result.toAdd)
         }
     }
 

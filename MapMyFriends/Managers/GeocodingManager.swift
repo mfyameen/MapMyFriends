@@ -5,6 +5,7 @@
 
 import MapKit
 
+@MainActor
 class GeocodingManager {
 
     var onContactResolved: ((MappedContact) -> Void)?
@@ -76,7 +77,9 @@ class GeocodingManager {
         let address = addresses[index]
 
         guard let request = MKGeocodingRequest(addressString: address.addressString) else {
+            #if DEBUG
             print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
+            #endif
             onProgress?(index + 1, total)
             geocodeSequentially(addresses: addresses, index: index + 1, total: total)
             return
@@ -105,7 +108,9 @@ class GeocodingManager {
                 )
                 self.onContactResolved?(contact)
             } else {
+                #if DEBUG
                 print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(error?.localizedDescription ?? "no results")")
+                #endif
             }
 
             self.onProgress?(index + 1, total)

@@ -2,7 +2,8 @@
 //  MapMyFriendsApp.swift
 //  MapMyFriends
 //
-//  Created by Fazal Yameen on 5/8/26.
+//  Created by @mfyameen on 5/8/26.
+//  open source and available at https://github.com/mfyameen/MapMyFriends
 //
 
 import SwiftUI

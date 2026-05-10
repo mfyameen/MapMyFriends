@@ -62,6 +62,15 @@ class MapViewController: UIViewController {
             ClusterAnnotationView.self,
             forAnnotationViewWithReuseIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier
         )
+
+        let trackingButton = MKUserTrackingButton(mapView: mapView)
+        trackingButton.translatesAutoresizingMaskIntoConstraints = false
+        trackingButton.backgroundColor = .clear
+        view.addSubview(trackingButton)
+        NSLayoutConstraint.activate([
+            trackingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            trackingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+        ])
     }
 
     // MARK: - Location

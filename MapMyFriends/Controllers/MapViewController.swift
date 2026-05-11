@@ -100,12 +100,14 @@ class MapViewController: UIViewController {
 
     private func loadContacts() {
         contactsManager.requestAccessAndFetch { [weak self] rawAddresses in
-            guard let self else { return }
-            if rawAddresses.isEmpty {
-                self.showContactsAccessDeniedAlert()
-                return
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if rawAddresses.isEmpty {
+                    self.showContactsAccessDeniedAlert()
+                    return
+                }
+                self.geocodingManager.process(addresses: rawAddresses)
             }
-            self.geocodingManager.process(addresses: rawAddresses)
         }
     }
 

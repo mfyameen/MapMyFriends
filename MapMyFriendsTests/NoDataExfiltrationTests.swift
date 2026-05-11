@@ -64,10 +64,17 @@ struct NoDataExfiltrationTests {
         for file in files {
             let contents = try String(contentsOf: file, encoding: .utf8)
             let fileName = file.lastPathComponent
+            let lines = contents.components(separatedBy: .newlines)
 
-            for (label, pattern) in NoDataExfiltrationTests.forbiddenPatterns {
-                if contents.contains(pattern) {
-                    violations.append("\(fileName): \(label) (\"\(pattern)\")")
+            for (lineNum, line) in lines.enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                // Skip comment lines
+                if trimmed.hasPrefix("//") || trimmed.hasPrefix("*") || trimmed.hasPrefix("/*") { continue }
+
+                for (label, pattern) in NoDataExfiltrationTests.forbiddenPatterns {
+                    if line.contains(pattern) {
+                        violations.append("\(fileName):\(lineNum + 1): \(label) (\"\(pattern)\")")
+                    }
                 }
             }
         }

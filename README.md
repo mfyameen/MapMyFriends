@@ -18,8 +18,10 @@ Code available at https://github.com/mfyameen/MapMyFriends
 - **Smart caching** — Geocoded coordinates are persisted to a local JSON file; second launch loads instantly with no network calls
 - **Pin clustering** — MapKit's native clustering groups nearby pins and shows a count badge at lower zoom levels
 - **Progressive loading** — A bottom banner shows real-time progress as addresses are geocoded ("Mapping 12 of 47 contacts…")
-- **User location** — Blue dot shows your current position; map centers on you at launch
+- **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter
 - **Callout details** — Tap any pin to see the contact's full name, address label (Home/Work/Other), and address
+- **Contact avatars** — Pins display the contact's thumbnail photo when available; falls back to a person icon
+- **Live contact sync** — Listens for `CNContactStoreDidChange` notifications and diffs contacts to add/remove pins without a full reload
 
 ## Requirements
 
@@ -44,20 +46,21 @@ The app will prompt for Contacts and Location permissions on first launch.
 
 ```
 MapMyFriends/
-├── MapMyFriendsApp.swift          # SwiftUI app entry point
+├── MapMyFriendsApp.swift            # SwiftUI app entry point
 ├── Controllers/
-│   └── MapViewController.swift    # Root UIKit VC — map, location, orchestration
+│   └── MapViewController.swift      # Root UIKit VC — map, location, orchestration
 ├── Managers/
-│   ├── CacheManager.swift         # JSON cache with CacheManaging protocol
-│   ├── ContactsManager.swift      # Contacts permission & fetch
-│   └── GeocodingManager.swift     # Sequential geocoding with rate limiting
+│   ├── CacheManager.swift           # JSON cache with CacheManaging protocol & thread-safe queue
+│   ├── ContactsManager.swift        # Contacts permission & fetch (incl. thumbnail data)
+│   ├── ContactDiffer.swift          # Pure-function diff for live contact sync
+│   └── GeocodingManager.swift       # Sequential geocoding via MKGeocodingRequest
 ├── Models/
-│   ├── MappedContact.swift        # Contact + coordinate
-│   └── CachedCoordinate.swift     # Codable lat/lng/timestamp
+│   ├── MappedContact.swift          # Contact + coordinate + optional thumbnail
+│   └── CachedCoordinate.swift       # Codable lat/lng/timestamp
 ├── Views/
-│   ├── ContactAnnotation.swift    # MKAnnotation wrapper
-│   ├── ContactAnnotationView.swift # Blue person pin with clustering
-│   ├── ClusterAnnotationView.swift # Circle with count badge
+│   ├── ContactAnnotation.swift      # MKAnnotation wrapper
+│   ├── ContactAnnotationView.swift  # Person pin with avatar support & clustering
+│   ├── ClusterAnnotationView.swift  # Circle with count badge
 │   └── MapViewControllerWrapper.swift # UIViewControllerRepresentable bridge
 └── Assets.xcassets/
 ```
@@ -70,30 +73,35 @@ MapMyFriends/
 - **Dependency injection** — `GeocodingManager` accepts a `CacheManaging` instance (defaults to `CacheManager.shared`), enabling mock injection in tests.
 - **Batch cache saves** — The cache writes to disk once after all geocoding completes (or on cancel), not after every individual store, reducing disk I/O.
 - **Sequential geocoding with delay** — Addresses are geocoded one at a time with a 0.15s delay between requests to stay well under Apple's `MKGeocodingRequest` rate limit.
+- **Contact diffing** — `ContactDiffer` computes a minimal diff (using `contactID + addressString` as identity) to add/remove only changed pins when contacts update, avoiding a full reload.
 
 ## How It Works
 
-1. **Launch** → `MapViewController` requests contacts permission
-2. **Fetch** → `ContactsManager` enumerates all contacts with postal addresses on a background thread
+1. **Launch** → `MapViewController` requests contacts permission and subscribes to `CNContactStoreDidChange`
+2. **Fetch** → `ContactsManager` enumerates all contacts with postal addresses (and thumbnails) on a background thread
 3. **Cache check** → `GeocodingManager` separates addresses into cache hits (instant) and misses (need geocoding)
 4. **Geocode** → Cache misses are geocoded sequentially via `MKGeocodingRequest` with rate-limit delays
-5. **Plot** → Each resolved contact is added to the map as a `ContactAnnotation` in real-time
+5. **Plot** → Each resolved contact is added to the map as a `ContactAnnotation` in real-time (with avatar if available)
 6. **Persist** → On completion, the cache is written to disk for instant loading on next launch
+7. **Live sync** → When contacts change, `ContactDiffer` computes a minimal diff and only adds/removes the affected pins
 
 ## Tests
 
-The project includes 27 unit and integration tests using Swift Testing framework.
+The project includes 48 tests using the Swift Testing framework.
 
 ```
 MapMyFriendsTests/
 ├── Mocks/
 │   └── MockCacheManager.swift
-├── CachedCoordinateTests.swift      # Codable round-trip, JSON stability, date precision
-├── CacheManagerTests.swift          # Store/retrieve, overwrite, persistence, corrupt recovery
-├── ContactAnnotationTests.swift     # Title, subtitle format, coordinate passthrough
-├── GeocodingManagerTests.swift      # Cache hits, empty input, cancel, metadata preservation
-├── AnnotationViewTests.swift        # Pin configuration, cluster view layout
-└── CacheIntegrationTests.swift      # End-to-end persistence, concurrent reads
+├── CachedCoordinateTests.swift          # Codable round-trip, JSON stability, date precision
+├── CacheManagerTests.swift              # Store/retrieve, overwrite, persistence, corrupt recovery
+├── CacheManagerThreadSafetyTests.swift  # Concurrent read/write stress tests
+├── CacheIntegrationTests.swift          # End-to-end persistence, concurrent reads
+├── ContactAnnotationTests.swift         # Title, subtitle format, coordinate passthrough
+├── ContactDifferTests.swift             # Diff logic for live contact sync
+├── GeocodingManagerTests.swift          # Cache hits, empty input, cancel, metadata preservation
+├── AnnotationViewTests.swift            # Pin configuration, cluster view layout
+└── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 
 Run tests:
@@ -103,11 +111,11 @@ xcodebuild -scheme MapMyFriendsTests -destination 'platform=iOS Simulator,name=i
 
 ## Roadmap
 
-- [ ] Contact change detection — re-geocode when `CNContactStoreDidChangeNotification` fires
+- [x] Contact change detection — live sync via `CNContactStoreDidChange` + `ContactDiffer`
+- [x] Contact avatar pins — circular contact photo in marker pins when thumbnails are available
 - [ ] Cache invalidation — detect when a cached address no longer matches the contact's current address
 - [ ] Refresh button — nav bar button to manually re-fetch and re-geocode
 - [ ] Error state UI — surface geocoding failure count ("3 addresses could not be mapped")
-- [ ] Contact avatar pins — circular contact photo instead of marker pins
 - [ ] Address type color coding — different pin colors for Home vs Work vs Other
 
 ## License

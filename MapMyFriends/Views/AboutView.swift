@@ -84,27 +84,12 @@ struct AboutView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
-
-            featureGrid
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: .black.opacity(0.04), radius: 8, y: 2)
-    }
-
-    private var featureGrid: some View {
-        LazyVGrid(columns: [
-            GridItem(.flexible(), spacing: 12),
-            GridItem(.flexible(), spacing: 12),
-        ], spacing: 12) {
-            FeatureBadge(icon: "person.2.fill", title: "Contact mapping")
-            FeatureBadge(icon: "circle.grid.3x3.fill", title: "Pin clustering")
-            FeatureBadge(icon: "internaldrive.fill", title: "Smart local caching")
-            FeatureBadge(icon: "arrow.triangle.2.circlepath", title: "Live contact sync")
-        }
-        .padding(.top, 4)
     }
 
     private var attributionCard: some View {
@@ -125,17 +110,10 @@ struct AboutView: View {
                 .foregroundStyle(.secondary)
 
             Link(destination: URL(string: "https://github.com/mfyameen/MapMyFriends")!) {
-                HStack(spacing: 8) {
-                    Image(systemName: "link")
-                        .font(.footnote.weight(.semibold))
-                    Text("View on GitHub")
-                        .font(.footnote.weight(.semibold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(.darkGray))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Image("GitHubLogo")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: 28)
             }
         }
         .padding(20)
@@ -157,30 +135,6 @@ struct AboutView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(20)
-    }
-}
-
-// MARK: - Feature Badge
-
-private struct FeatureBadge: View {
-    let icon: String
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(.blue)
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.blue.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

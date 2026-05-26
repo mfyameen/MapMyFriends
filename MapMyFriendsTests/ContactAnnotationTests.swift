@@ -15,7 +15,8 @@ struct ContactAnnotationTests {
         addressLabel: "Home",
         addressString: "123 Main St\nSan Francisco, CA",
         coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
-        thumbnailImageData: nil
+        thumbnailImageData: nil,
+        phoneNumber: nil
     )
 
     @Test func titleReturnsFullName() {
@@ -46,7 +47,8 @@ struct ContactAnnotationTests {
             addressLabel: "Work",
             addressString: "1 Infinite Loop\nCupertino, CA",
             coordinate: CLLocationCoordinate2D(latitude: 37.3318, longitude: -122.0312),
-            thumbnailImageData: data
+            thumbnailImageData: data,
+            phoneNumber: "+14155551234"
         )
         #expect(contact.thumbnailImageData == data)
     }

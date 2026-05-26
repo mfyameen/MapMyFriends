@@ -17,7 +17,8 @@ struct ContactDifferTests {
             fullName: "Name",
             addressLabel: "Home",
             addressString: address,
-            thumbnailImageData: nil
+            thumbnailImageData: nil,
+            phoneNumber: nil
         )
     }
 
@@ -28,7 +29,8 @@ struct ContactDifferTests {
             addressLabel: "Home",
             addressString: address,
             coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
-            thumbnailImageData: nil
+            thumbnailImageData: nil,
+            phoneNumber: nil
         )
     }
 

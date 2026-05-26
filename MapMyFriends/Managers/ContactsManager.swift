@@ -13,6 +13,7 @@ class ContactsManager {
         let addressLabel: String
         let addressString: String
         let thumbnailImageData: Data?
+        let phoneNumber: String?
     }
 
     private let store = CNContactStore()
@@ -37,6 +38,7 @@ class ContactsManager {
                 CNContactPostalAddressesKey as CNKeyDescriptor,
                 CNContactIdentifierKey as CNKeyDescriptor,
                 CNContactThumbnailImageDataKey as CNKeyDescriptor,
+                CNContactPhoneNumbersKey as CNKeyDescriptor,
             ]
 
             let request = CNContactFetchRequest(keysToFetch: keysToFetch)
@@ -50,6 +52,13 @@ class ContactsManager {
                         .joined(separator: " ")
 
                     guard !fullName.isEmpty else { return }
+
+                    // Prefer mobile, then first available
+                    let phoneNumber: String? = {
+                        let phones = contact.phoneNumbers
+                        let mobile = phones.first { $0.label == CNLabelPhoneNumberMobile || $0.label == CNLabelPhoneNumberiPhone }
+                        return (mobile ?? phones.first)?.value.stringValue
+                    }()
 
                     for labeledAddress in contact.postalAddresses {
                         let label: String
@@ -67,7 +76,8 @@ class ContactsManager {
                             fullName: fullName,
                             addressLabel: label,
                             addressString: addressString,
-                            thumbnailImageData: contact.thumbnailImageData
+                            thumbnailImageData: contact.thumbnailImageData,
+                            phoneNumber: phoneNumber
                         ))
                     }
                 }

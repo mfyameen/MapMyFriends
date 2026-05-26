@@ -16,7 +16,8 @@ struct GeocodingManagerTests {
             fullName: name,
             addressLabel: "Home",
             addressString: address,
-            thumbnailImageData: nil
+            thumbnailImageData: nil,
+            phoneNumber: nil
         )
     }
 
@@ -101,7 +102,8 @@ struct GeocodingManagerTests {
             fullName: "John Smith",
             addressLabel: "Work",
             addressString: "addr",
-            thumbnailImageData: nil
+            thumbnailImageData: nil,
+            phoneNumber: "+14155550000"
         )
         manager.process(addresses: [address])
 

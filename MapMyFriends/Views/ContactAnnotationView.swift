@@ -14,7 +14,7 @@ class ContactAnnotationView: MKMarkerAnnotationView {
         markerTintColor = .systemBlue
         glyphImage = UIImage(systemName: "person.fill")
         canShowCallout = true
-        // TODO: Add rightCalloutAccessoryView for future deep-dive action
+        rightCalloutAccessoryView = UIButton(type: .detailDisclosure)
     }
 
     @available(*, unavailable)

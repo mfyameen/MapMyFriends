@@ -271,10 +271,50 @@ class MapViewController: UIViewController {
 extension MapViewController: MKMapViewDelegate {
 
     func mapView(_ mapView: MKMapView, viewFor annotation: any MKAnnotation) -> MKAnnotationView? {
-        // Return nil for user location — MapKit handles it
-        // Returning nil for other annotations lets registered classes take over
         if annotation is MKUserLocation { return nil }
         return nil
+    }
+
+    func mapView(_ mapView: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {
+        guard let annotation = view.annotation as? ContactAnnotation else { return }
+        let contact = annotation.mappedContact
+
+        guard let phone = contact.phoneNumber, !phone.isEmpty else {
+            let alert = UIAlertController(
+                title: contact.fullName,
+                message: "No phone number available for this contact.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+            present(alert, animated: true)
+            return
+        }
+
+        let digits = phone.filter { $0.isNumber || $0 == "+" }
+
+        let sheet = UIAlertController(title: contact.fullName, message: phone, preferredStyle: .actionSheet)
+
+        sheet.addAction(UIAlertAction(title: "Call", style: .default) { _ in
+            if let url = URL(string: "tel:\(digits)") {
+                UIApplication.shared.open(url)
+            }
+        })
+
+        sheet.addAction(UIAlertAction(title: "Message", style: .default) { _ in
+            if let url = URL(string: "sms:\(digits)") {
+                UIApplication.shared.open(url)
+            }
+        })
+
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+
+        // iPad popover anchor
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = control
+            popover.sourceRect = control.bounds
+        }
+
+        present(sheet, animated: true)
     }
 }
 

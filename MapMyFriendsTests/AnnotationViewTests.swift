@@ -17,7 +17,8 @@ struct ContactAnnotationViewTests {
             addressLabel: "Home",
             addressString: "1 Test St",
             coordinate: .init(latitude: 0, longitude: 0),
-            thumbnailImageData: thumbnailImageData
+            thumbnailImageData: thumbnailImageData,
+            phoneNumber: nil
         )
     }
 

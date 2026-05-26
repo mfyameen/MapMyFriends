@@ -43,7 +43,8 @@ class GeocodingManager {
                     addressLabel: address.addressLabel,
                     addressString: address.addressString,
                     coordinate: CLLocationCoordinate2D(latitude: cached.lat, longitude: cached.lng),
-                    thumbnailImageData: address.thumbnailImageData
+                    thumbnailImageData: address.thumbnailImageData,
+                    phoneNumber: address.phoneNumber
                 )
                 onContactResolved?(contact)
             }
@@ -104,7 +105,8 @@ class GeocodingManager {
                     addressLabel: address.addressLabel,
                     addressString: address.addressString,
                     coordinate: coordinate,
-                    thumbnailImageData: address.thumbnailImageData
+                    thumbnailImageData: address.thumbnailImageData,
+                    phoneNumber: address.phoneNumber
                 )
                 self.onContactResolved?(contact)
             } else {

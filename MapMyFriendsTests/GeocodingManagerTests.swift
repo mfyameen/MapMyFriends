@@ -112,4 +112,38 @@ struct GeocodingManagerTests {
         #expect(resolved?.addressLabel == "Work")
         #expect(resolved?.addressString == "addr")
     }
+
+    @Test func resolvedContactPreservesPhoneNumber() {
+        let mockCache = MockCacheManager()
+        mockCache.storage["addr"] = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
+
+        let manager = GeocodingManager(cache: mockCache)
+        var resolved: MappedContact?
+        manager.onContactResolved = { resolved = $0 }
+
+        let address = ContactsManager.RawContactAddress(
+            contactID: "ph-test",
+            fullName: "Phone User",
+            addressLabel: "Home",
+            addressString: "addr",
+            thumbnailImageData: nil,
+            phoneNumber: "+1 (415) 555-0199"
+        )
+        manager.process(addresses: [address])
+
+        #expect(resolved?.phoneNumber == "+1 (415) 555-0199")
+    }
+
+    @Test func resolvedContactPreservesNilPhoneNumber() {
+        let mockCache = MockCacheManager()
+        mockCache.storage["addr"] = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
+
+        let manager = GeocodingManager(cache: mockCache)
+        var resolved: MappedContact?
+        manager.onContactResolved = { resolved = $0 }
+
+        manager.process(addresses: [makeAddress(address: "addr")])
+
+        #expect(resolved?.phoneNumber == nil)
+    }
 }

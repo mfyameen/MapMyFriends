@@ -52,4 +52,36 @@ struct ContactAnnotationTests {
         )
         #expect(contact.thumbnailImageData == data)
     }
+
+    // MARK: - Phone Number
+
+    @Test func phoneNumberNilByDefault() {
+        #expect(sampleContact.phoneNumber == nil)
+    }
+
+    @Test func phoneNumberStored() {
+        let contact = MappedContact(
+            contactID: "ph-1",
+            fullName: "Alice",
+            addressLabel: "Home",
+            addressString: "1 Main St",
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            thumbnailImageData: nil,
+            phoneNumber: "+14155551234"
+        )
+        #expect(contact.phoneNumber == "+14155551234")
+    }
+
+    @Test func phoneNumberEmptyString() {
+        let contact = MappedContact(
+            contactID: "ph-2",
+            fullName: "Bob",
+            addressLabel: "Work",
+            addressString: "2 Oak Ave",
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            thumbnailImageData: nil,
+            phoneNumber: ""
+        )
+        #expect(contact.phoneNumber == "")
+    }
 }

@@ -71,6 +71,13 @@ struct ContactAnnotationViewTests {
         #expect(view.markerTintColor == .systemBlue)
         #expect(view.glyphImage != nil)
     }
+
+    @Test func rightCalloutAccessoryIsDetailDisclosure() {
+        let view = ContactAnnotationView(annotation: nil, reuseIdentifier: nil)
+        #expect(view.rightCalloutAccessoryView is UIButton)
+        let button = view.rightCalloutAccessoryView as? UIButton
+        #expect(button?.buttonType == .detailDisclosure)
+    }
 }
 
 struct ClusterAnnotationViewTests {

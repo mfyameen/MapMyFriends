@@ -5,6 +5,7 @@
 
 import Contacts
 import MapKit
+import SwiftUI
 import UIKit
 
 class MapViewController: UIViewController {
@@ -71,6 +72,34 @@ class MapViewController: UIViewController {
             trackingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
             trackingButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
         ])
+
+        let infoButton = UIButton(type: .system)
+        infoButton.translatesAutoresizingMaskIntoConstraints = false
+        let config = UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)
+        infoButton.setImage(UIImage(systemName: "info.circle", withConfiguration: config), for: .normal)
+        infoButton.tintColor = .systemBlue
+        infoButton.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.85)
+        infoButton.layer.cornerRadius = 20
+        infoButton.layer.shadowColor = UIColor.black.cgColor
+        infoButton.layer.shadowOpacity = 0.12
+        infoButton.layer.shadowRadius = 4
+        infoButton.layer.shadowOffset = CGSize(width: 0, height: 1)
+        infoButton.addTarget(self, action: #selector(showAbout), for: .touchUpInside)
+        view.addSubview(infoButton)
+        NSLayoutConstraint.activate([
+            infoButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            infoButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            infoButton.widthAnchor.constraint(equalToConstant: 40),
+            infoButton.heightAnchor.constraint(equalToConstant: 40),
+        ])
+    }
+
+    // MARK: - About
+
+    @objc private func showAbout() {
+        let aboutVC = UIHostingController(rootView: AboutView())
+        aboutVC.modalPresentationStyle = .pageSheet
+        present(aboutVC, animated: true)
     }
 
     // MARK: - Location

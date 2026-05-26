@@ -16,7 +16,7 @@ protocol CacheManaging {
 // MARK: - Implementation
 
 class CacheManager: CacheManaging {
-    nonisolated(unsafe) static let shared = CacheManager()
+    static let shared = CacheManager()
 
     private var cache: [String: CachedCoordinate] = [:]
     private let fileURL: URL

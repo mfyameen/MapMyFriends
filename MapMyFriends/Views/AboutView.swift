@@ -36,15 +36,12 @@ struct AboutView: View {
 
             VStack(spacing: 12) {
                 // App icon
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(.white)
+                Image("AppIconImage")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
                     .frame(width: 80, height: 80)
-                    .background(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(Color.blue)
-                            .shadow(color: .blue.opacity(0.3), radius: 12, y: 6)
-                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .shadow(color: .black.opacity(0.15), radius: 12, y: 6)
 
                 Text("Map My Friends")
                     .font(.system(size: 32, weight: .bold))

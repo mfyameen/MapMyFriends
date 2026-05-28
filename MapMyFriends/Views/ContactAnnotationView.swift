@@ -22,34 +22,6 @@ class ContactAnnotationView: MKMarkerAnnotationView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var annotation: (any MKAnnotation)? {
-        didSet { applyAvatar() }
-    }
-
-    // MARK: - Private
-
-    private func applyAvatar() {
-        guard
-            let contactAnnotation = annotation as? ContactAnnotation,
-            let data = contactAnnotation.mappedContact.thumbnailImageData,
-            let image = UIImage(data: data)
-        else {
-            // No avatar — reset to default
-            glyphImage = UIImage(systemName: "person.fill")
-            markerTintColor = .systemBlue
-            return
-        }
-
-        glyphImage = circularImage(from: image, size: CGSize(width: 40, height: 40))
-        markerTintColor = .systemGray
-    }
-
-    private func circularImage(from source: UIImage, size: CGSize) -> UIImage {
-        let renderer = UIGraphicsImageRenderer(size: size)
-        return renderer.image { context in
-            let rect = CGRect(origin: .zero, size: size)
-            UIBezierPath(ovalIn: rect).addClip()
-            source.draw(in: rect)
-        }
-    }
+    // TODO: Fix contact avatar display on pins — currently broken, disabled for now.
+    // The applyAvatar() logic and circularImage() helper are preserved below for when this is revisited.
 }

@@ -32,7 +32,11 @@ class GeocodingManager {
         var cacheMisses: [ContactsManager.RawContactAddress] = []
 
         for address in addresses {
-            if cache.coordinate(for: address.addressString) != nil {
+            if let cached = cache.coordinate(for: address.addressString) {
+                if cached.failed {
+                    // Previously failed — skip silently, TTL will retry later
+                    continue
+                }
                 cacheHits.append(address)
             } else {
                 cacheMisses.append(address)
@@ -130,6 +134,9 @@ class GeocodingManager {
                 self.onContactResolved?(contact)
             } else {
                 self.failedCount += 1
+                // Cache the failure so we don't retry on every launch (TTL will retry later)
+                let failedEntry = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
+                cache.store(coordinate: failedEntry, for: address.addressString)
                 #if DEBUG
                 print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(error?.localizedDescription ?? "no results")")
                 #endif

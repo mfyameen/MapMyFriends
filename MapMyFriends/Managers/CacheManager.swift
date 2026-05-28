@@ -18,9 +18,13 @@ protocol CacheManaging {
 class CacheManager: CacheManaging {
     static let shared = CacheManager()
 
+    /// Cached entries older than this are treated as stale and re-geocoded.
+    static let cacheTTL: TimeInterval = 90 * 24 * 60 * 60 // 90 days
+
     private var cache: [String: CachedCoordinate] = [:]
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.mapmyfriends.cachemanager")
+    private let ttl: TimeInterval
 
     /// Production singleton init — uses the app's documents directory.
     private convenience init() {
@@ -29,16 +33,24 @@ class CacheManager: CacheManaging {
         self.init(fileURL: url)
     }
 
-    /// Testable init — accepts a custom file URL for isolated testing.
-    init(fileURL: URL) {
+    /// Testable init — accepts a custom file URL and optional TTL for isolated testing.
+    init(fileURL: URL, ttl: TimeInterval = CacheManager.cacheTTL) {
         self.fileURL = fileURL
+        self.ttl = ttl
         loadFromDisk()
     }
 
     // MARK: - Public
 
     func coordinate(for address: String) -> CachedCoordinate? {
-        queue.sync { cache[address] }
+        queue.sync {
+            guard let entry = cache[address] else { return nil }
+            // Treat entries older than TTL as stale
+            if Date().timeIntervalSince(entry.cachedAt) > ttl {
+                return nil
+            }
+            return entry
+        }
     }
 
     func store(coordinate: CachedCoordinate, for address: String) {

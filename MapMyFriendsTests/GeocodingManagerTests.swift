@@ -31,7 +31,7 @@ struct GeocodingManagerTests {
         var completeCalled = false
 
         manager.onContactResolved = { _ in resolvedCount += 1 }
-        manager.onComplete = { completeCalled = true }
+        manager.onComplete = { _ in completeCalled = true }
 
         manager.process(addresses: [
             makeAddress(id: "1", address: "123 Main St"),
@@ -45,7 +45,7 @@ struct GeocodingManagerTests {
     @Test func emptyInputCallsComplete() {
         let manager = GeocodingManager(cache: MockCacheManager())
         var completeCalled = false
-        manager.onComplete = { completeCalled = true }
+        manager.onComplete = { _ in completeCalled = true }
 
         manager.process(addresses: [])
 
@@ -80,7 +80,7 @@ struct GeocodingManagerTests {
         mockCache.storage["addr"] = CachedCoordinate(lat: 1.0, lng: 1.0, cachedAt: Date())
 
         let manager = GeocodingManager(cache: mockCache)
-        manager.onComplete = {}
+        manager.onComplete = { _ in }
 
         manager.process(addresses: [makeAddress(address: "addr")])
 

@@ -122,7 +122,10 @@ class MapViewController: UIViewController {
                     self.showContactsAccessDeniedAlert()
                     return
                 }
-                self.geocodingManager.process(addresses: rawAddresses)
+                self.geocodingManager.process(
+                    addresses: rawAddresses,
+                    userLocation: self.locationManager.location?.coordinate
+                )
             }
         }
     }
@@ -152,7 +155,10 @@ class MapViewController: UIViewController {
 
         // Geocode and add new addresses
         if !result.toAdd.isEmpty {
-            geocodingManager.process(addresses: result.toAdd)
+            geocodingManager.process(
+                addresses: result.toAdd,
+                userLocation: locationManager.location?.coordinate
+            )
         }
     }
 
@@ -166,9 +172,12 @@ class MapViewController: UIViewController {
             self?.updateProgressBanner(completed: completed, total: total)
         }
 
-        geocodingManager.onComplete = { [weak self] in
+        geocodingManager.onComplete = { [weak self] failedCount in
             self?.hideProgressBanner()
             self?.centerOnAnnotationsIfNeeded()
+            if failedCount > 0 {
+                self?.showGeocodingFailureBanner(count: failedCount)
+            }
         }
     }
 
@@ -229,6 +238,41 @@ class MapViewController: UIViewController {
             self.progressBanner = nil
             self.progressLabel = nil
         })
+    }
+
+    // MARK: - Failure Banner
+
+    private func showGeocodingFailureBanner(count: Int) {
+        let noun = count == 1 ? "address" : "addresses"
+        let banner = UILabel()
+        banner.text = "\(count) \(noun) could not be mapped"
+        banner.font = .systemFont(ofSize: 13, weight: .medium)
+        banner.textColor = .white
+        banner.textAlignment = .center
+        banner.backgroundColor = UIColor.systemOrange
+        banner.layer.cornerRadius = 10
+        banner.clipsToBounds = true
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.alpha = 0
+        view.addSubview(banner)
+
+        NSLayoutConstraint.activate([
+            banner.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            banner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            banner.heightAnchor.constraint(equalToConstant: 36),
+            banner.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
+        ])
+        // Padding via content insets
+        banner.layoutMargins = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
+
+        UIView.animate(withDuration: 0.25) { banner.alpha = 1 }
+
+        // Auto-dismiss after 4 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            UIView.animate(withDuration: 0.25, animations: { banner.alpha = 0 }) { _ in
+                banner.removeFromSuperview()
+            }
+        }
     }
 
     // MARK: - Map Centering

@@ -10,18 +10,23 @@ class GeocodingManager {
 
     var onContactResolved: ((MappedContact) -> Void)?
     var onProgress: ((Int, Int) -> Void)?
-    var onComplete: (() -> Void)?
+    /// Called when all geocoding is finished. Parameter is the number of addresses that failed to geocode.
+    var onComplete: ((Int) -> Void)?
 
     private let cache: CacheManaging
     private var isCancelled = false
     private var currentRequest: MKGeocodingRequest?
+    private var failedCount = 0
 
     init(cache: CacheManaging = CacheManager.shared) {
         self.cache = cache
     }
 
-    func process(addresses: [ContactsManager.RawContactAddress]) {
+    /// Process addresses for geocoding. If `userLocation` is provided, cached contacts are
+    /// delivered nearest-first so nearby pins appear on the map before distant ones.
+    func process(addresses: [ContactsManager.RawContactAddress], userLocation: CLLocationCoordinate2D? = nil) {
         isCancelled = false
+        failedCount = 0
 
         var cacheHits: [ContactsManager.RawContactAddress] = []
         var cacheMisses: [ContactsManager.RawContactAddress] = []
@@ -34,10 +39,11 @@ class GeocodingManager {
             }
         }
 
-        // Deliver cache hits immediately
+        // Resolve cache hits into MappedContacts
+        var resolvedHits: [MappedContact] = []
         for address in cacheHits {
             if let cached = cache.coordinate(for: address.addressString) {
-                let contact = MappedContact(
+                resolvedHits.append(MappedContact(
                     contactID: address.contactID,
                     fullName: address.fullName,
                     addressLabel: address.addressLabel,
@@ -45,14 +51,27 @@ class GeocodingManager {
                     coordinate: CLLocationCoordinate2D(latitude: cached.lat, longitude: cached.lng),
                     thumbnailImageData: address.thumbnailImageData,
                     phoneNumber: address.phoneNumber
-                )
-                onContactResolved?(contact)
+                ))
             }
+        }
+
+        // Sort cache hits by proximity to user so nearby pins appear first
+        if let userLocation {
+            let userCL = CLLocation(latitude: userLocation.latitude, longitude: userLocation.longitude)
+            resolvedHits.sort { a, b in
+                let distA = userCL.distance(from: CLLocation(latitude: a.coordinate.latitude, longitude: a.coordinate.longitude))
+                let distB = userCL.distance(from: CLLocation(latitude: b.coordinate.latitude, longitude: b.coordinate.longitude))
+                return distA < distB
+            }
+        }
+
+        for contact in resolvedHits {
+            onContactResolved?(contact)
         }
 
         // Process cache misses sequentially
         guard !cacheMisses.isEmpty else {
-            onComplete?()
+            onComplete?(0)
             return
         }
 
@@ -71,7 +90,7 @@ class GeocodingManager {
     private func geocodeSequentially(addresses: [ContactsManager.RawContactAddress], index: Int, total: Int) {
         guard !isCancelled, index < addresses.count else {
             cache.saveToDisk()
-            onComplete?()
+            onComplete?(failedCount)
             return
         }
 
@@ -110,12 +129,19 @@ class GeocodingManager {
                 )
                 self.onContactResolved?(contact)
             } else {
+                self.failedCount += 1
                 #if DEBUG
                 print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(error?.localizedDescription ?? "no results")")
                 #endif
             }
 
-            self.onProgress?(index + 1, total)
+            let completed = index + 1
+            self.onProgress?(completed, total)
+
+            // Persist every 10 geocodes to protect progress if the app is killed
+            if completed % 10 == 0 {
+                cache.saveToDisk()
+            }
 
             // Delay before next geocode to respect Apple rate limits
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {

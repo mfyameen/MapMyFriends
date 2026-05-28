@@ -4,6 +4,7 @@
 //
 
 import Contacts
+import ContactsUI
 import MapKit
 import SwiftUI
 import UIKit
@@ -323,6 +324,30 @@ extension MapViewController: MKMapViewDelegate {
         guard let annotation = view.annotation as? ContactAnnotation else { return }
         let contact = annotation.mappedContact
 
+        if FeatureFlags.openContactOnPinTap {
+            openInContacts(contactID: contact.contactID)
+        } else {
+            showCallMessageSheet(for: contact, from: control)
+        }
+    }
+
+    private func openInContacts(contactID: String) {
+        do {
+            let cnContact = try CNContactStore().unifiedContact(
+                withIdentifier: contactID,
+                keysToFetch: [CNContactViewController.descriptorForRequiredKeys()]
+            )
+            let contactVC = CNContactViewController(for: cnContact)
+            contactVC.allowsEditing = false
+            navigationController?.pushViewController(contactVC, animated: true)
+        } catch {
+            #if DEBUG
+            print("[MapViewController] Failed to fetch contact: \(error)")
+            #endif
+        }
+    }
+
+    private func showCallMessageSheet(for contact: MappedContact, from control: UIControl) {
         guard let phone = contact.phoneNumber, !phone.isEmpty else {
             let alert = UIAlertController(
                 title: contact.fullName,
@@ -352,7 +377,6 @@ extension MapViewController: MKMapViewDelegate {
 
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
 
-        // iPad popover anchor
         if let popover = sheet.popoverPresentationController {
             popover.sourceView = control
             popover.sourceRect = control.bounds

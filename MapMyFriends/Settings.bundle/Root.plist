@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PreferenceSpecifiers</key>
+	<array>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Pin Behavior</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Open Contact on Tap</string>
+			<key>Key</key>
+			<string>open_contact_on_pin_tap</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>When on, tapping a pin opens the contact in the Contacts app. When off, shows Call / Message options.</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>Display</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Title</key>
+			<string>Hide Mapping Progress</string>
+			<key>Key</key>
+			<string>hide_geocoding_toasts</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>When on, hides the mapping progress banner and error messages during geocoding.</string>
+		</dict>
+	</array>
+	<key>StringsTable</key>
+	<string>Root</string>
+</dict>
+</plist>

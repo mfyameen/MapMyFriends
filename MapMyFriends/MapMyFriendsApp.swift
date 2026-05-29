@@ -10,6 +10,11 @@ import SwiftUI
 
 @main
 struct MapMyFriendsApp: App {
+
+    init() {
+        FeatureFlags.registerDefaults()
+    }
+
     var body: some Scene {
         WindowGroup {
             MapViewControllerWrapper()

@@ -319,7 +319,17 @@ extension MapViewController: MKMapViewDelegate {
     func mapView(_ mapView: MKMapView, viewFor annotation: any MKAnnotation) -> MKAnnotationView? {
         if annotation is MKUserLocation { return nil }
 
-        if annotation is MKClusterAnnotation {
+        if let cluster = annotation as? MKClusterAnnotation {
+            // Single-member cluster — display as a regular contact pin instead
+            if cluster.memberAnnotations.count == 1,
+               let member = cluster.memberAnnotations.first as? ContactAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(
+                    withIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier,
+                    for: member
+                ) as? ContactAnnotationView
+                view?.annotation = member
+                return view
+            }
             return mapView.dequeueReusableAnnotationView(
                 withIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier,
                 for: annotation
@@ -340,8 +350,43 @@ extension MapViewController: MKMapViewDelegate {
     func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
         guard let cluster = view.annotation as? MKClusterAnnotation else { return }
 
+        let members = cluster.memberAnnotations
+
+        // Check if all members are at essentially the same point (can't be expanded by zooming)
+        let allSameLocation = members.allSatisfy { member in
+            let latDiff = abs(member.coordinate.latitude - cluster.coordinate.latitude)
+            let lngDiff = abs(member.coordinate.longitude - cluster.coordinate.longitude)
+            return latDiff < 0.0001 && lngDiff < 0.0001
+        }
+
+        if allSameLocation, members.count <= 10 {
+            // Show a list of contacts at this location since zooming won't help
+            mapView.deselectAnnotation(cluster, animated: false)
+            let sheet = UIAlertController(
+                title: "\(members.count) contacts at this location",
+                message: nil,
+                preferredStyle: .actionSheet
+            )
+            for member in members {
+                if let contact = (member as? ContactAnnotation)?.mappedContact {
+                    sheet.addAction(UIAlertAction(title: contact.fullName, style: .default) { [weak self] _ in
+                        if FeatureFlags.openContactOnPinTap {
+                            self?.openInContacts(contactID: contact.contactID)
+                        }
+                    })
+                }
+            }
+            sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            if let popover = sheet.popoverPresentationController {
+                popover.sourceView = view
+                popover.sourceRect = view.bounds
+            }
+            present(sheet, animated: true)
+            return
+        }
+
         // Compute bounding rect of all members and zoom in with padding
-        let rect = cluster.memberAnnotations.reduce(MKMapRect.null) { rect, member in
+        let rect = members.reduce(MKMapRect.null) { rect, member in
             let point = MKMapPoint(member.coordinate)
             let memberRect = MKMapRect(x: point.x - 100, y: point.y - 100, width: 200, height: 200)
             return rect.union(memberRect)

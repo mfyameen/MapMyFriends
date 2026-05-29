@@ -16,4 +16,10 @@ enum FeatureFlags {
     /// **Decision needed:** Choose one behavior or expose as a user-facing setting.
     /// See: https://github.com/mfyameen/MapMyFriends/issues — "Pin tap action: Contacts app vs Call/Message sheet"
     static let openContactOnPinTap = true
+
+    // MARK: - Geocoding UI
+
+    /// When `true`, suppresses the "Mapping X of Y contacts…" progress banner
+    /// and the "X addresses could not be mapped" error toast.
+    static let hideGeocodingToasts = true
 }

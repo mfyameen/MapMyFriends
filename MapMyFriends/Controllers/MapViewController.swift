@@ -170,13 +170,14 @@ class MapViewController: UIViewController {
         }
 
         geocodingManager.onProgress = { [weak self] completed, total in
+            guard !FeatureFlags.hideGeocodingToasts else { return }
             self?.updateProgressBanner(completed: completed, total: total)
         }
 
         geocodingManager.onComplete = { [weak self] failedCount in
             self?.hideProgressBanner()
             self?.centerOnAnnotationsIfNeeded()
-            if failedCount > 0 {
+            if failedCount > 0, !FeatureFlags.hideGeocodingToasts {
                 self?.showGeocodingFailureBanner(count: failedCount)
             }
         }
@@ -317,7 +318,40 @@ extension MapViewController: MKMapViewDelegate {
 
     func mapView(_ mapView: MKMapView, viewFor annotation: any MKAnnotation) -> MKAnnotationView? {
         if annotation is MKUserLocation { return nil }
+
+        if annotation is MKClusterAnnotation {
+            return mapView.dequeueReusableAnnotationView(
+                withIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier,
+                for: annotation
+            )
+        }
+
+        if annotation is ContactAnnotation {
+            let view = mapView.dequeueReusableAnnotationView(
+                withIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier,
+                for: annotation
+            )
+            return view
+        }
+
         return nil
+    }
+
+    func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+        guard let cluster = view.annotation as? MKClusterAnnotation else { return }
+
+        // Compute bounding rect of all members and zoom in with padding
+        let rect = cluster.memberAnnotations.reduce(MKMapRect.null) { rect, member in
+            let point = MKMapPoint(member.coordinate)
+            let memberRect = MKMapRect(x: point.x - 100, y: point.y - 100, width: 200, height: 200)
+            return rect.union(memberRect)
+        }
+
+        let padding = UIEdgeInsets(top: 60, left: 40, bottom: 60, right: 40)
+        mapView.setVisibleMapRect(rect, edgePadding: padding, animated: true)
+
+        // Deselect so user can tap the same cluster again after it re-forms
+        mapView.deselectAnnotation(cluster, animated: false)
     }
 
     func mapView(_ mapView: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {

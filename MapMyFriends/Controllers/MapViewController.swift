@@ -411,18 +411,22 @@ extension MapViewController: MKMapViewDelegate {
     }
 
     private func openInContacts(contactID: String) {
-        do {
-            let cnContact = try CNContactStore().unifiedContact(
-                withIdentifier: contactID,
-                keysToFetch: [CNContactViewController.descriptorForRequiredKeys()]
-            )
-            let contactVC = CNContactViewController(for: cnContact)
-            contactVC.allowsEditing = false
-            navigationController?.pushViewController(contactVC, animated: true)
-        } catch {
-            #if DEBUG
-            print("[MapViewController] Failed to fetch contact: \(error)")
-            #endif
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let cnContact = try CNContactStore().unifiedContact(
+                    withIdentifier: contactID,
+                    keysToFetch: [CNContactViewController.descriptorForRequiredKeys()]
+                )
+                DispatchQueue.main.async {
+                    let contactVC = CNContactViewController(for: cnContact)
+                    contactVC.allowsEditing = false
+                    self?.navigationController?.pushViewController(contactVC, animated: true)
+                }
+            } catch {
+                #if DEBUG
+                print("[MapViewController] Failed to fetch contact: \(error)")
+                #endif
+            }
         }
     }
 

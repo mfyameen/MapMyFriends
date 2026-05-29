@@ -78,6 +78,31 @@ struct ContactAnnotationViewTests {
         let button = view.rightCalloutAccessoryView as? UIButton
         #expect(button?.buttonType == .detailDisclosure)
     }
+
+    @Test func prepareForReuseResetsToBlue() {
+        let view = ContactAnnotationView(annotation: nil, reuseIdentifier: nil)
+        // Simulate corruption that could happen during reuse
+        view.markerTintColor = .red
+        view.glyphImage = nil
+        view.clusteringIdentifier = nil
+
+        view.prepareForReuse()
+
+        #expect(view.markerTintColor == .systemBlue)
+        #expect(view.glyphImage != nil)
+        #expect(view.clusteringIdentifier == "contact")
+    }
+
+    @Test func annotationDidSetResetsStyle() {
+        let view = ContactAnnotationView(annotation: nil, reuseIdentifier: nil)
+        view.markerTintColor = .red
+
+        let annotation = ContactAnnotation(mappedContact: makeContact())
+        view.annotation = annotation
+
+        #expect(view.markerTintColor == .systemBlue)
+        #expect(view.clusteringIdentifier == "contact")
+    }
 }
 
 struct ClusterAnnotationViewTests {

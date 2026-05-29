@@ -87,4 +87,42 @@ struct CacheManagerTests {
             #expect(result?.lat == Double(i))
         }
     }
+
+    // MARK: - TTL
+
+    @Test func freshEntryReturnedWithinTTL() {
+        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 60)
+        let coord = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
+        cache.store(coordinate: coord, for: "addr")
+        #expect(cache.coordinate(for: "addr") != nil)
+    }
+
+    @Test func staleEntryReturnedAsNil() {
+        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 60)
+        let staleDate = Date(timeIntervalSinceNow: -120) // 2 minutes ago, TTL is 60s
+        let coord = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: staleDate)
+        cache.store(coordinate: coord, for: "addr")
+        #expect(cache.coordinate(for: "addr") == nil, "Stale entry should be treated as a miss")
+    }
+
+    @Test func zeroTTLRejectsEverything() {
+        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 0)
+        let coord = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
+        cache.store(coordinate: coord, for: "addr")
+        #expect(cache.coordinate(for: "addr") == nil)
+    }
+
+    // MARK: - Failed Entries
+
+    @Test func failedEntryPersistsAndReloads() {
+        let url = makeTempFileURL()
+        let cache1 = CacheManager(fileURL: url)
+        cache1.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true), for: "bad_addr")
+        cache1.saveToDisk()
+
+        let cache2 = CacheManager(fileURL: url)
+        let result = cache2.coordinate(for: "bad_addr")
+        #expect(result != nil)
+        #expect(result?.failed == true)
+    }
 }

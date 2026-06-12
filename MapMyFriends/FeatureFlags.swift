@@ -22,7 +22,7 @@ enum FeatureFlags {
     /// Call once at app launch to ensure defaults exist before Settings is opened.
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
-            Keys.openContactOnPinTap: true,
+            Keys.openContactOnPinTap: false,
             Keys.hideGeocodingToasts: true,
         ])
     }

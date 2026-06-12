@@ -18,13 +18,17 @@ protocol CacheManaging {
 class CacheManager: CacheManaging {
     static let shared = CacheManager()
 
-    /// Cached entries older than this are treated as stale and re-geocoded.
+    /// Successful entries older than this are treated as stale and re-geocoded.
     static let cacheTTL: TimeInterval = 90 * 24 * 60 * 60 // 90 days
+
+    /// Failed entries use a shorter TTL so transient failures are retried sooner.
+    static let failedTTL: TimeInterval = 24 * 60 * 60 // 24 hours
 
     private var cache: [String: CachedCoordinate] = [:]
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.mapmyfriends.cachemanager")
     private let ttl: TimeInterval
+    private let failedTtl: TimeInterval
 
     /// Production singleton init — uses the app's documents directory.
     private convenience init() {
@@ -33,10 +37,11 @@ class CacheManager: CacheManaging {
         self.init(fileURL: url)
     }
 
-    /// Testable init — accepts a custom file URL and optional TTL for isolated testing.
-    init(fileURL: URL, ttl: TimeInterval = CacheManager.cacheTTL) {
+    /// Testable init — accepts a custom file URL and optional TTLs for isolated testing.
+    init(fileURL: URL, ttl: TimeInterval = CacheManager.cacheTTL, failedTtl: TimeInterval = CacheManager.failedTTL) {
         self.fileURL = fileURL
         self.ttl = ttl
+        self.failedTtl = failedTtl
         loadFromDisk()
     }
 
@@ -45,8 +50,9 @@ class CacheManager: CacheManaging {
     func coordinate(for address: String) -> CachedCoordinate? {
         queue.sync {
             guard let entry = cache[address] else { return nil }
-            // Treat entries older than TTL as stale
-            if Date().timeIntervalSince(entry.cachedAt) > ttl {
+            let age = Date().timeIntervalSince(entry.cachedAt)
+            let limit = entry.failed ? failedTtl : ttl
+            if age > limit {
                 return nil
             }
             return entry

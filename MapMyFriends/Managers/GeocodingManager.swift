@@ -28,25 +28,16 @@ class GeocodingManager {
         isCancelled = false
         failedCount = 0
 
-        var cacheHits: [ContactsManager.RawContactAddress] = []
+        var resolvedHits: [MappedContact] = []
         var cacheMisses: [ContactsManager.RawContactAddress] = []
 
         for address in addresses {
             if let cached = cache.coordinate(for: address.addressString) {
                 if cached.failed {
-                    // Previously failed — skip silently, TTL will retry later
+                    // Previously failed — skip silently, short TTL will retry later
                     continue
                 }
-                cacheHits.append(address)
-            } else {
-                cacheMisses.append(address)
-            }
-        }
-
-        // Resolve cache hits into MappedContacts
-        var resolvedHits: [MappedContact] = []
-        for address in cacheHits {
-            if let cached = cache.coordinate(for: address.addressString) {
+                // Resolve directly from the first lookup (no double lookup)
                 resolvedHits.append(MappedContact(
                     contactID: address.contactID,
                     fullName: address.fullName,
@@ -56,6 +47,8 @@ class GeocodingManager {
                     thumbnailImageData: address.thumbnailImageData,
                     phoneNumber: address.phoneNumber
                 ))
+            } else {
+                cacheMisses.append(address)
             }
         }
 
@@ -101,6 +94,10 @@ class GeocodingManager {
         let address = addresses[index]
 
         guard let request = MKGeocodingRequest(addressString: address.addressString) else {
+            self.failedCount += 1
+            // Cache invalid address strings as failed so they aren't retried every launch
+            let failedEntry = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
+            cache.store(coordinate: failedEntry, for: address.addressString)
             #if DEBUG
             print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
             #endif

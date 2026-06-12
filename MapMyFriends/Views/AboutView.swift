@@ -72,12 +72,12 @@ struct AboutView: View {
             Text("About the app")
                 .font(.headline)
 
-            Text("Map My Friends is an iOS app that reads your phone contacts, geocodes their addresses, and plots them as clustered pins on a full-screen map. Your location is shown as a blue dot. Tap a pin to see the contact's name and address type.")
+            Text("Map My Friends shows your friends, family, and colleagues nearby and around the world. Your contacts addesses (not real-time location) are pinned on the map - making it easy to see who's near you whethere you're traveling for work or exploring a new neighbourhood.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
 
-            Text("All geocoding results are cached locally so subsequent launches are near-instant — and it's built entirely with Apple frameworks, with no third-party dependencies.")
+            Text("All data is stored locally and never uploaded anywhere — and it's built entirely with Apple frameworks, with no third-party dependencies. The code is completely open-source and available on GitHub.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)

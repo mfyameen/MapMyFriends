@@ -68,7 +68,8 @@ struct MappedContact: Sendable {
     let addressLabel: String     // "Home", "Work", "Other", etc.
     let addressString: String    // raw formatted address, used as cache key
     let coordinate: CLLocationCoordinate2D
-    let thumbnailImageData: Data?  // contact avatar for pin display
+    let thumbnailImageData: Data?  // contact avatar (currently disabled)
+    let phoneNumber: String?       // preferred phone number for Call/Message
 }
 ```
 
@@ -80,6 +81,7 @@ struct CachedCoordinate: Codable, Sendable {
     let lat: Double
     let lng: Double
     let cachedAt: Date
+    let failed: Bool    // true if geocoding failed; uses shorter TTL (24h vs 90d)
 }
 ```
 
@@ -124,7 +126,8 @@ class CacheManager: CacheManaging {
 - `saveToDisk()` encodes the full dictionary with `JSONEncoder` and writes to the file path using `Data.write(to:options:[.atomic, .completeFileProtection])`. Atomic write prevents corruption if the app is killed mid-write.
 - The `CacheManaging` protocol enables dependency injection for testing via `MockCacheManager`.
 - The cache dictionary key is the raw address string exactly as it comes from `CNPostalAddressFormatter`. No normalization needed — consistency of the key is what matters.
-- No cache expiry for now. Entries persist indefinitely.
+- **Dual TTL**: Successful entries expire after 90 days (`cacheTTL`). Failed entries use a 24-hour TTL (`failedTTL`) so transient geocoding failures are retried sooner. Both TTLs are injectable via `init(fileURL:ttl:failedTtl:)` for testing.
+- `coordinate(for:)` checks the entry's age against the appropriate TTL and returns `nil` for stale entries.
 
 ---
 
@@ -144,6 +147,7 @@ class ContactsManager {
         let addressLabel: String    // human-readable label
         let addressString: String   // formatted for geocoding
         let thumbnailImageData: Data?  // contact avatar
+        let phoneNumber: String?       // preferred phone (mobile > first)
     }
 
     func requestAccessAndFetch(completion: @escaping @Sendable ([RawContactAddress]) -> Void)
@@ -153,7 +157,8 @@ class ContactsManager {
 **Implementation notes:**
 - Use `CNContactStore().requestAccess(for: .contacts)` to prompt the user.
 - If access is denied, call `completion([])` and surface an alert in `MapViewController` (see below).
-- Fetch using `CNContactFetchRequest` with these keys to request: `[CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPostalAddressesKey, CNContactIdentifierKey, CNContactThumbnailImageDataKey]`
+- Fetch using `CNContactFetchRequest` with these keys to request: `[CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPostalAddressesKey, CNContactIdentifierKey, CNContactThumbnailImageDataKey, CNContactPhoneNumbersKey]`
+- For phone numbers, prefer mobile/iPhone label, then fall back to the first available number.
 - Use `CNPostalAddressFormatter.string(from:style:.mailingAddress)` to convert each `CNPostalAddress` to a geocodable string.
 - For the address label, use `CNLabeledValue<CNPostalAddress>.label` and run it through `CNLabeledValue<CNPostalAddress>.localizedString(forLabel:)` to get "Home", "Work", etc. If the label is nil or empty, fall back to "Other".
 - Return one `RawContactAddress` per address — so a contact with two addresses yields two entries.
@@ -174,29 +179,29 @@ class GeocodingManager {
 
     var onContactResolved: ((MappedContact) -> Void)?
     var onProgress: ((Int, Int) -> Void)?
-    var onComplete: (() -> Void)?
+    /// Parameter is the number of addresses that failed to geocode.
+    var onComplete: ((Int) -> Void)?
 
     private let cache: CacheManaging
     private var currentRequest: MKGeocodingRequest?
 
     init(cache: CacheManaging = CacheManager.shared)
-    func process(addresses: [ContactsManager.RawContactAddress])
+    func process(addresses: [ContactsManager.RawContactAddress], userLocation: CLLocationCoordinate2D? = nil)
     func cancel()
 }
 ```
 
 **Implementation notes:**
 - The class is `@MainActor`-isolated. It accepts a `CacheManaging` dependency via init (defaults to `CacheManager.shared`) for testability.
-- On `process(addresses:)`, first separate the list into cache hits and cache misses.
-- For cache hits: immediately call `onContactResolved` for each, passing through `thumbnailImageData` from the raw address.
-- For cache misses: geocode sequentially using `MKGeocodingRequest(addressString:)` and `.getMapItems()`. Do NOT geocode in parallel — Apple rate-limits geocoding aggressively and parallel calls will fail.
-- If `MKGeocodingRequest(addressString:)` returns nil (invalid address string), skip the address and advance progress.
-- Between each geocode call, add a `0.15` second delay using `DispatchQueue.main.asyncAfter` to stay well under the rate limit.
-- If a geocode succeeds, take `mapItems?.first?.location.coordinate`, construct a `MappedContact` (including thumbnail data), store it in the cache, and call `onContactResolved`.
-- If a geocode fails (nil result or error), log the failure and skip — do not retry. The address will be attempted again on next launch since it won't be in the cache.
-- Call `onProgress(completedCount, totalMissCount)` after each geocode attempt (success or failure).
-- When all misses are processed, call `cache.saveToDisk()` (batch save) then `onComplete`.
-- `cancel()` sets an `isCancelled` flag, cancels the current `MKGeocodingRequest`, and calls `cache.saveToDisk()` to persist any partial progress.
+- On `process(addresses:userLocation:)`, classify each address in a **single cache lookup**: cache hit (resolve immediately), failed entry (`continue` — skip silently, short TTL will retry), or cache miss (geocode). This single-lookup approach eliminates a previous double-lookup race condition.
+- If `userLocation` is provided, resolved cache hits are sorted by proximity so nearby pins appear first.
+- For cache misses: geocode sequentially using `MKGeocodingRequest(addressString:)` and `.getMapItems()`. Do NOT geocode in parallel — Apple rate-limits geocoding aggressively.
+- If `MKGeocodingRequest(addressString:)` returns nil (invalid address string), cache it as `failed: true` and increment `failedCount`.
+- Between each geocode call, add a `0.15` second delay using `DispatchQueue.main.asyncAfter`.
+- If a geocode succeeds, store the result in the cache and call `onContactResolved`.
+- If a geocode fails (nil result or error), cache the failure as `failed: true` with a fresh timestamp (24h retry via `failedTTL`).
+- **Incremental persistence**: `cache.saveToDisk()` is called every 10 geocodes, plus on completion and on cancel.
+- `onComplete(failedCount)` reports the number of addresses that failed to geocode.
 - All callbacks are delivered on the main thread (guaranteed by `@MainActor` isolation).
 
 ---
@@ -230,12 +235,14 @@ class ContactAnnotation: NSObject, MKAnnotation {
 
 **Implementation notes:**
 - Subclass `MKMarkerAnnotationView`
-- Set `clusteringIdentifier = "contact"` — this single line enables MapKit's native clustering
-- `markerTintColor`: `.systemBlue` by default; `.systemGray` when a contact avatar is displayed
-- `glyphImage`: person SF Symbol (`UIImage(systemName: "person.fill")`) by default; replaced with a circular contact thumbnail when `thumbnailImageData` is available
-- `canShowCallout = true` — enables the built-in tap callout bubble with title and subtitle automatically
-- When `annotation` is set, `applyAvatar()` checks for thumbnail data and renders it as a circular glyph image
-- Register this class in `MapViewController` via `mapView.register(ContactAnnotationView.self, forAnnotationViewWithReuseIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier)`
+- All styling is centralized in `applyDefaultStyle()`, called from `init`, `prepareForReuse()`, and `annotation didSet` to prevent red pin artifacts during MapKit's cluster transitions.
+- `clusteringIdentifier = "contact"` enables MapKit's native clustering
+- `markerTintColor`: `.systemBlue`
+- `glyphImage`: person SF Symbol (`UIImage(systemName: "person.fill")`)
+- `canShowCallout = true` with `rightCalloutAccessoryView = UIButton(type: .detailDisclosure)`
+- Contact avatar display is currently disabled (TODO: fix rendering issues)
+- The delegate explicitly dequeues views in `mapView(_:viewFor:)` instead of returning `nil`, and single-member clusters are displayed as regular pins
+- Register via `mapView.register(ContactAnnotationView.self, forAnnotationViewWithReuseIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier)`
 
 ---
 
@@ -390,12 +397,20 @@ Follow these strictly to avoid bugs:
 
 ## Status of Originally Planned TODOs
 
-1. ~~**Contact change detection**~~ — ✅ Implemented. `MapViewController` observes `CNContactStoreDidChange` and uses `ContactDiffer` to compute a minimal diff, adding/removing only changed pins.
-2. **Cache invalidation** — detect when a cached address string no longer matches the contact's current address *(not yet implemented)*
-3. **Refresh button** — a nav bar button to manually re-fetch contacts and re-geocode changed addresses *(not yet implemented)*
-4. **Error state UI** — surface geocoding failure count to the user ("3 addresses could not be mapped") *(not yet implemented)*
-5. ~~**Contact avatar pins**~~ — ✅ Implemented. `ContactAnnotationView` displays circular contact thumbnails when available via `applyAvatar()`.
+1. ~~**Contact change detection**~~ — ✅ Implemented via `CNContactStoreDidChange` + `ContactDiffer`.
+2. **Cache invalidation** — detect when a cached address no longer matches the contact's current address *(not yet implemented)*
+3. **Refresh button** — nav bar button to manually re-fetch and re-geocode *(not yet implemented)*
+4. ~~**Error state UI**~~ — ✅ Implemented. Auto-dismissing orange banner shows failed geocode count (gated by `hideGeocodingToasts` feature flag).
+5. ~~**Contact avatar pins**~~ — Implemented but disabled pending fix (see TODO in `ContactAnnotationView`).
 6. **Address type color coding** — different pin colors for Home vs Work vs Other *(not yet implemented)*
+7. ~~**Call/Text from pin**~~ — ✅ Implemented. Action sheet with Call/Message (gated by `openContactOnPinTap` feature flag).
+8. ~~**Open in Contacts**~~ — ✅ Implemented. Pushes `CNContactViewController` on pin tap (background fetch for speed).
+9. ~~**About page**~~ — ✅ Implemented. SwiftUI `AboutView` with app icon and GitHub link.
+10. ~~**Feature flags**~~ — ✅ Implemented. `Settings.bundle` with user-facing toggles backed by `UserDefaults`.
+11. ~~**Cluster zoom**~~ — ✅ Implemented. Tapping a cluster zooms to its members; same-location clusters show a contact list.
+12. ~~**Cache TTL**~~ — ✅ Implemented. 90-day TTL for successes, 24-hour TTL for failures.
+13. ~~**Proximity sorting**~~ — ✅ Implemented. Cache hits sorted by distance to user.
+14. ~~**Incremental persistence**~~ — ✅ Implemented. Cache saves every 10 geocodes.
 
 ---
 

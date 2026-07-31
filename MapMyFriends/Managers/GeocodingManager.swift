@@ -8,36 +8,62 @@ import MapKit
 @MainActor
 class GeocodingManager {
 
+    /// Breakdown of a single `process()` run, for observability when toasts are hidden.
+    struct Summary: Equatable {
+        /// Contacts resolved straight from a valid cache entry.
+        var resolvedFromCache = 0
+        /// Contacts resolved by a live geocode this run.
+        var geocoded = 0
+        /// Addresses that could not be geocoded this run (includes `invalidAddressStrings`).
+        var failed = 0
+        /// Subset of `failed` where `MKGeocodingRequest` could not even be constructed.
+        var invalidAddressStrings = 0
+        /// Legacy `failed: true` cache entries written by older builds that we now retry
+        /// instead of silently dropping.
+        var retriedCachedFailures = 0
+
+        var attempted: Int { resolvedFromCache + geocoded + failed }
+    }
+
     var onContactResolved: ((MappedContact) -> Void)?
     var onProgress: ((Int, Int) -> Void)?
     /// Called when all geocoding is finished. Parameter is the number of addresses that failed to geocode.
     var onComplete: ((Int) -> Void)?
+    /// Called immediately before `onComplete` with the full breakdown of the run.
+    var onSummary: ((Summary) -> Void)?
 
     private let cache: CacheManaging
+    private let geocoder: AddressGeocoding
+    /// Pause between geocodes to respect Apple rate limits. Tests set this to 0 to run synchronously.
+    private let requestDelay: TimeInterval
     private var isCancelled = false
-    private var currentRequest: MKGeocodingRequest?
-    private var failedCount = 0
+    private var summary = Summary()
 
-    init(cache: CacheManaging = CacheManager.shared) {
+    /// - Parameter geocoder: Defaults to `MapKitGeocoder`. Injected in tests to run offline.
+    init(
+        cache: CacheManaging = CacheManager.shared,
+        geocoder: AddressGeocoding? = nil,
+        requestDelay: TimeInterval = 0.15
+    ) {
         self.cache = cache
+        self.geocoder = geocoder ?? MapKitGeocoder()
+        self.requestDelay = requestDelay
     }
 
     /// Process addresses for geocoding. If `userLocation` is provided, cached contacts are
     /// delivered nearest-first so nearby pins appear on the map before distant ones.
     func process(addresses: [ContactsManager.RawContactAddress], userLocation: CLLocationCoordinate2D? = nil) {
         isCancelled = false
-        failedCount = 0
+        summary = Summary()
 
         var resolvedHits: [MappedContact] = []
         var cacheMisses: [ContactsManager.RawContactAddress] = []
 
         for address in addresses {
-            if let cached = cache.coordinate(for: address.addressString) {
-                if cached.failed {
-                    // Previously failed — skip silently, short TTL will retry later
-                    continue
-                }
-                // Resolve directly from the first lookup (no double lookup)
+            // Single lookup per address (no double lookup)
+            let cached = cache.coordinate(for: address.addressString)
+
+            if let cached, !cached.failed {
                 resolvedHits.append(MappedContact(
                     contactID: address.contactID,
                     fullName: address.fullName,
@@ -47,10 +73,19 @@ class GeocodingManager {
                     thumbnailImageData: address.thumbnailImageData,
                     phoneNumber: address.phoneNumber
                 ))
-            } else {
-                cacheMisses.append(address)
+                continue
             }
+
+            if cached?.failed == true {
+                // Legacy failure entry from an older build. Never skip it — a transient
+                // failure must not hide a contact until the entry expires.
+                summary.retriedCachedFailures += 1
+            }
+
+            cacheMisses.append(address)
         }
+
+        summary.resolvedFromCache = resolvedHits.count
 
         // Sort cache hits by proximity to user so nearby pins appear first
         if let userLocation {
@@ -68,7 +103,7 @@ class GeocodingManager {
 
         // Process cache misses sequentially
         guard !cacheMisses.isEmpty else {
-            onComplete?(0)
+            finish()
             return
         }
 
@@ -77,47 +112,51 @@ class GeocodingManager {
 
     func cancel() {
         isCancelled = true
-        currentRequest?.cancel()
-        currentRequest = nil
+        geocoder.cancelInFlight()
         cache.saveToDisk()
     }
 
     // MARK: - Private
 
+    private func finish() {
+        logSummary()
+        onSummary?(summary)
+        onComplete?(summary.failed)
+    }
+
+    private func logSummary() {
+        #if DEBUG
+        // Always log, regardless of `hideGeocodingToasts`, so missing pins are diagnosable.
+        print("""
+        [GeocodingManager] FromCache: \(summary.resolvedFromCache), \
+        Geocoded: \(summary.geocoded), \
+        Failed: \(summary.failed) (invalid: \(summary.invalidAddressStrings)), \
+        RetriedCachedFailures: \(summary.retriedCachedFailures)
+        """)
+        #endif
+    }
+
     private func geocodeSequentially(addresses: [ContactsManager.RawContactAddress], index: Int, total: Int) {
         guard !isCancelled, index < addresses.count else {
             cache.saveToDisk()
-            onComplete?(failedCount)
+            finish()
             return
         }
 
         let address = addresses[index]
 
-        guard let request = MKGeocodingRequest(addressString: address.addressString) else {
-            self.failedCount += 1
-            // Cache invalid address strings as failed so they aren't retried every launch
-            let failedEntry = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
-            cache.store(coordinate: failedEntry, for: address.addressString)
-            #if DEBUG
-            print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
-            #endif
-            onProgress?(index + 1, total)
-            geocodeSequentially(addresses: addresses, index: index + 1, total: total)
-            return
-        }
-
-        currentRequest = request
-
-        request.getMapItems { [weak self] mapItems, error in
+        geocoder.geocode(address.addressString) { [weak self] outcome in
             guard let self, !self.isCancelled else { return }
 
-            if let coordinate = mapItems?.first?.location.coordinate {
+            switch outcome {
+            case .success(let coordinate):
                 let cached = CachedCoordinate(
                     lat: coordinate.latitude,
                     lng: coordinate.longitude,
                     cachedAt: Date()
                 )
-                cache.store(coordinate: cached, for: address.addressString)
+                self.cache.store(coordinate: cached, for: address.addressString)
+                self.summary.geocoded += 1
 
                 let contact = MappedContact(
                     contactID: address.contactID,
@@ -129,13 +168,23 @@ class GeocodingManager {
                     phoneNumber: address.phoneNumber
                 )
                 self.onContactResolved?(contact)
-            } else {
-                self.failedCount += 1
-                // Cache the failure so we don't retry on every launch (TTL will retry later)
-                let failedEntry = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
-                cache.store(coordinate: failedEntry, for: address.addressString)
+
+            case .invalidAddress:
+                // Deliberately NOT cached as a failure: constructing the request is free
+                // (no network call) and can fail for valid addresses due to formatting or
+                // encoding quirks. Retry on the next launch.
+                self.summary.failed += 1
+                self.summary.invalidAddressStrings += 1
                 #if DEBUG
-                print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(error?.localizedDescription ?? "no results")")
+                print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
+                #endif
+
+            case .failed(let reason):
+                // Deliberately NOT cached as a failure. A transient network error or rate limit
+                // must not hide this contact until a cache entry expires — retry next launch.
+                self.summary.failed += 1
+                #if DEBUG
+                print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(reason ?? "no results")")
                 #endif
             }
 
@@ -144,11 +193,16 @@ class GeocodingManager {
 
             // Persist every 10 geocodes to protect progress if the app is killed
             if completed % 10 == 0 {
-                cache.saveToDisk()
+                self.cache.saveToDisk()
+            }
+
+            guard self.requestDelay > 0 else {
+                self.geocodeSequentially(addresses: addresses, index: index + 1, total: total)
+                return
             }
 
             // Delay before next geocode to respect Apple rate limits
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.requestDelay) {
                 self.geocodeSequentially(addresses: addresses, index: index + 1, total: total)
             }
         }

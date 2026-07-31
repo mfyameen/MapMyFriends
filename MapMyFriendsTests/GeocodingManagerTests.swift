@@ -21,6 +21,11 @@ struct GeocodingManagerTests {
         )
     }
 
+    /// Manager wired to a deterministic geocoder with no inter-request delay.
+    private func makeManager(cache: CacheManaging, geocoder: AddressGeocoding) -> GeocodingManager {
+        GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0)
+    }
+
     @Test func allCacheHitsDeliverContacts() {
         let mockCache = MockCacheManager()
         mockCache.storage["123 Main St"] = CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: Date())
@@ -147,13 +152,15 @@ struct GeocodingManagerTests {
         #expect(resolved?.phoneNumber == nil)
     }
 
-    // MARK: - Failed Entry Handling
+    // MARK: - Legacy Failed Entry Handling
 
-    @Test func failedCacheEntryIsSkippedSilently() {
+    @Test func legacyFailedCacheEntryIsRetried() {
         let mockCache = MockCacheManager()
-        mockCache.storage["bad_addr"] = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
+        mockCache.storeLegacyFailure("bad_addr")
+        let geocoder = MockGeocoder()
+        geocoder.succeed("bad_addr", lat: 3.0, lng: 4.0)
 
-        let manager = GeocodingManager(cache: mockCache)
+        let manager = makeManager(cache: mockCache, geocoder: geocoder)
         var resolvedCount = 0
         var completeFailedCount = -1
 
@@ -162,16 +169,39 @@ struct GeocodingManagerTests {
 
         manager.process(addresses: [makeAddress(address: "bad_addr")])
 
-        #expect(resolvedCount == 0, "Failed cache entry should not resolve a contact")
-        #expect(completeFailedCount == 0, "No geocoding attempted, so 0 failures")
+        #expect(geocoder.requestedAddresses == ["bad_addr"], "Legacy failures must be retried, not skipped")
+        #expect(resolvedCount == 1, "A successful retry should resolve a contact")
+        #expect(completeFailedCount == 0)
     }
 
-    @Test func mixOfSuccessAndFailedCacheEntries() {
+    @Test func legacyFailedCacheEntryThatFailsAgainIsReported() {
         let mockCache = MockCacheManager()
-        mockCache.storage["good"] = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
-        mockCache.storage["bad"] = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
+        mockCache.storeLegacyFailure("bad_addr")
+        let geocoder = MockGeocoder()
+        geocoder.fail("bad_addr")
 
-        let manager = GeocodingManager(cache: mockCache)
+        let manager = makeManager(cache: mockCache, geocoder: geocoder)
+        var resolvedCount = 0
+        var completeFailedCount = -1
+
+        manager.onContactResolved = { _ in resolvedCount += 1 }
+        manager.onComplete = { completeFailedCount = $0 }
+
+        manager.process(addresses: [makeAddress(address: "bad_addr")])
+
+        #expect(resolvedCount == 0)
+        #expect(completeFailedCount == 1, "Repeat failures must be surfaced, not silently dropped")
+        #expect(mockCache.storedFailureCount == 1, "Only the pre-existing legacy entry; no new failure written")
+    }
+
+    @Test func mixOfSuccessAndLegacyFailedCacheEntries() {
+        let mockCache = MockCacheManager()
+        mockCache.storeSuccess("good", lat: 1.0, lng: 2.0)
+        mockCache.storeLegacyFailure("bad")
+        let geocoder = MockGeocoder()
+        geocoder.succeed("bad", lat: 5.0, lng: 6.0)
+
+        let manager = makeManager(cache: mockCache, geocoder: geocoder)
         var resolvedCount = 0
         manager.onContactResolved = { _ in resolvedCount += 1 }
         manager.onComplete = { _ in }
@@ -181,7 +211,7 @@ struct GeocodingManagerTests {
             makeAddress(id: "2", address: "bad"),
         ])
 
-        #expect(resolvedCount == 1, "Only the non-failed entry should resolve")
+        #expect(resolvedCount == 2, "Cache hit resolves and the legacy failure resolves after retry")
     }
 
     @Test func onCompleteReportsZeroForAllCacheHits() {

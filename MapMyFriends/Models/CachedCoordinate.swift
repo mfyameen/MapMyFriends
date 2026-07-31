@@ -9,8 +9,10 @@ struct CachedCoordinate: Codable, Sendable {
     let lat: Double
     let lng: Double
     let cachedAt: Date
-    /// `true` if geocoding failed for this address. Prevents retrying on every launch.
-    /// The entry still expires via TTL, so it will be retried after 90 days.
+    /// Legacy flag: older builds cached geocoding failures as `failed: true` to avoid retrying
+    /// them every launch, which hid contacts behind transient failures. Failures are no longer
+    /// written, but the field is retained so existing cache files still decode — and any entry
+    /// with `failed == true` is now treated as a cache miss and retried.
     let failed: Bool
 
     init(lat: Double, lng: Double, cachedAt: Date, failed: Bool = false) {

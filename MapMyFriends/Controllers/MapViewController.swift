@@ -13,6 +13,10 @@ class MapViewController: UIViewController {
 
     // MARK: - Properties
 
+    /// Contact store notifications are coalesced over this window so a burst of edits
+    /// triggers a single refresh instead of one per notification.
+    private static let contactChangeDebounceInterval: TimeInterval = 1.0
+
     private let mapView = MKMapView()
     private let locationManager = CLLocationManager()
     private let contactsManager = ContactsManager()
@@ -22,6 +26,9 @@ class MapViewController: UIViewController {
     private var progressLabel: UILabel?
     private var didCenterOnUser = false
     private var isRefreshing = false
+    /// Gates contact store changes until the initial geocoding pass has finished.
+    private let contactChangeCoalescer = ContactChangeCoalescer()
+    private var contactChangeDebounceWorkItem: DispatchWorkItem?
 
     // MARK: - Lifecycle
 
@@ -45,6 +52,7 @@ class MapViewController: UIViewController {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        contactChangeDebounceWorkItem?.cancel()
     }
 
     // MARK: - Map Setup
@@ -109,8 +117,35 @@ class MapViewController: UIViewController {
     }
 
     @objc private func contactStoreDidChange(_ notification: Notification) {
-        guard !isRefreshing else { return }
-        refreshContacts()
+        switch contactChangeCoalescer.noteChange() {
+        case .deferUntilInitialLoadCompletes:
+            // Almost certainly the permission grant that kicked off the initial load.
+            // It will be applied once that load has finished.
+            break
+        case .scheduleRefresh:
+            scheduleContactRefresh()
+        }
+    }
+
+    /// Coalesces rapid `CNContactStoreDidChange` bursts into a single refresh.
+    private func scheduleContactRefresh() {
+        contactChangeDebounceWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard !self.isRefreshing else {
+                // A refresh is already in flight; retry after it settles so the change isn't lost.
+                self.scheduleContactRefresh()
+                return
+            }
+            self.refreshContacts()
+        }
+
+        contactChangeDebounceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.contactChangeDebounceInterval,
+            execute: workItem
+        )
     }
 
     // MARK: - Contacts & Geocoding
@@ -120,6 +155,10 @@ class MapViewController: UIViewController {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if rawAddresses.isEmpty {
+                    // No geocoding will run, so unblock refreshes explicitly.
+                    if self.contactChangeCoalescer.noteInitialLoadComplete() {
+                        self.scheduleContactRefresh()
+                    }
                     self.showContactsAccessDeniedAlert()
                     return
                 }
@@ -143,6 +182,15 @@ class MapViewController: UIViewController {
     }
 
     private func diffAndUpdate(newAddresses: [ContactsManager.RawContactAddress]) {
+        // An empty fetch means access was revoked or enumeration failed — not that every
+        // contact was deleted. Diffing against it would remove every pin on the map.
+        guard !newAddresses.isEmpty else {
+            #if DEBUG
+            print("[MapViewController] Contact fetch returned no addresses; keeping existing pins")
+            #endif
+            return
+        }
+
         let existingAnnotations = mapView.annotations.compactMap { $0 as? ContactAnnotation }
         let existingContacts = existingAnnotations.map { $0.mappedContact }
 
@@ -175,10 +223,16 @@ class MapViewController: UIViewController {
         }
 
         geocodingManager.onComplete = { [weak self] failedCount in
-            self?.hideProgressBanner()
-            self?.centerOnAnnotationsIfNeeded()
+            guard let self else { return }
+            self.hideProgressBanner()
+            self.centerOnAnnotationsIfNeeded()
             if failedCount > 0, !FeatureFlags.hideGeocodingToasts {
-                self?.showGeocodingFailureBanner(count: failedCount)
+                self.showGeocodingFailureBanner(count: failedCount)
+            }
+
+            // Apply any store change that arrived while the initial load was running.
+            if self.contactChangeCoalescer.noteInitialLoadComplete() {
+                self.scheduleContactRefresh()
             }
         }
     }

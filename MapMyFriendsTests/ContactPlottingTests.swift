@@ -3,8 +3,11 @@
 //  MapMyFriendsTests
 //
 //  Comprehensive tests for the contact address → geocode → plot pipeline.
-//  Covers cache hits, misses, failures, TTL expiry, proximity sorting,
-//  and edge cases that previously caused regressions.
+//  Covers cache hits, misses, legacy failure entries, TTL expiry, proximity sorting,
+//  and the ten use cases from the contact-plotting bug investigation.
+//
+//  Geocoding runs through `MockGeocoder` with `requestDelay: 0`, so a whole run
+//  completes synchronously inside `process()` and never touches the network.
 //
 
 import CoreLocation
@@ -15,6 +18,13 @@ import Testing
 struct ContactPlottingTests {
 
     // MARK: - Helpers
+
+    private struct RunResult {
+        var resolved: [MappedContact] = []
+        var progressEvents: [(completed: Int, total: Int)] = []
+        var summary: GeocodingManager.Summary?
+        var reportedFailureCount: Int?
+    }
 
     private func makeAddress(
         id: String = "1",
@@ -31,234 +41,192 @@ struct ContactPlottingTests {
         )
     }
 
+    /// Builds `count` addresses named `<prefix>-0 ... <prefix>-(count-1)`.
+    private func makeAddresses(count: Int, prefix: String = "addr") -> [ContactsManager.RawContactAddress] {
+        (0..<count).map { makeAddress(id: "\($0)", name: "Contact \($0)", address: "\(prefix)-\($0)") }
+    }
+
     private func makeTempFileURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("json")
     }
 
+    private func makeManager(cache: CacheManaging, geocoder: AddressGeocoding) -> GeocodingManager {
+        GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0)
+    }
+
+    /// Runs `process()` to completion and captures everything the manager reported.
+    private func run(
+        _ manager: GeocodingManager,
+        addresses: [ContactsManager.RawContactAddress],
+        userLocation: CLLocationCoordinate2D? = nil
+    ) -> RunResult {
+        var result = RunResult()
+        manager.onContactResolved = { result.resolved.append($0) }
+        manager.onProgress = { completed, total in result.progressEvents.append((completed, total)) }
+        manager.onSummary = { result.summary = $0 }
+        manager.onComplete = { result.reportedFailureCount = $0 }
+
+        manager.process(addresses: addresses, userLocation: userLocation)
+        return result
+    }
+
     // MARK: - 1. Basic Cache Hit Resolution
 
     @Test func cachedAddressResolvesToPin() {
-        let mock = MockCacheManager()
-        mock.storage["123 Main St"] = CachedCoordinate(lat: 37.7749, lng: -122.4194, cachedAt: Date())
+        let cache = MockCacheManager()
+        cache.storeSuccess("123 Main St", lat: 37.7749, lng: -122.4194)
 
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
+        let result = run(makeManager(cache: cache, geocoder: MockGeocoder()), addresses: [makeAddress()])
 
-        manager.process(addresses: [makeAddress()])
-
-        #expect(resolved.count == 1)
-        #expect(resolved.first?.fullName == "Test User")
-        #expect(resolved.first?.coordinate.latitude == 37.7749)
+        #expect(result.resolved.count == 1)
+        #expect(result.resolved.first?.fullName == "Test User")
+        #expect(result.resolved.first?.coordinate.latitude == 37.7749)
     }
 
     @Test func multipleCachedAddressesAllResolve() {
-        let mock = MockCacheManager()
-        mock.storage["addr1"] = CachedCoordinate(lat: 1.0, lng: 1.0, cachedAt: Date())
-        mock.storage["addr2"] = CachedCoordinate(lat: 2.0, lng: 2.0, cachedAt: Date())
-        mock.storage["addr3"] = CachedCoordinate(lat: 3.0, lng: 3.0, cachedAt: Date())
+        let cache = MockCacheManager()
+        cache.storeSuccess("addr-0", lat: 1.0, lng: 1.0)
+        cache.storeSuccess("addr-1", lat: 2.0, lng: 2.0)
+        cache.storeSuccess("addr-2", lat: 3.0, lng: 3.0)
 
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
+        let result = run(
+            makeManager(cache: cache, geocoder: MockGeocoder()),
+            addresses: makeAddresses(count: 3)
+        )
 
-        manager.process(addresses: [
-            makeAddress(id: "a", address: "addr1"),
-            makeAddress(id: "b", address: "addr2"),
-            makeAddress(id: "c", address: "addr3"),
-        ])
-
-        #expect(resolved.count == 3, "All 3 cached addresses should resolve")
+        #expect(result.resolved.count == 3, "All 3 cached addresses should resolve")
+        #expect(result.summary?.resolvedFromCache == 3)
     }
 
     // MARK: - 2. Cache Miss Handling
 
-    @Test func uncachedAddressBecomesCacheMiss() {
-        let mock = MockCacheManager()
-        // No entries in cache
+    @Test func uncachedAddressIsGeocoded() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder()
+        geocoder.succeed("123 Main St", lat: 10.0, lng: 20.0)
 
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        var completeFailedCount = -1
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { completeFailedCount = $0 }
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: [makeAddress()])
 
-        // With no cache entries, the address is a miss. Since we can't actually geocode
-        // in tests, we just verify it doesn't resolve from cache.
-        manager.process(addresses: [makeAddress()])
-
-        #expect(resolved.isEmpty, "Uncached address should not resolve immediately from cache")
-        // onComplete won't fire synchronously since there are cache misses to geocode
+        #expect(geocoder.requestedAddresses == ["123 Main St"])
+        #expect(result.resolved.count == 1)
+        #expect(result.summary?.geocoded == 1)
+        #expect(cache.coordinate(for: "123 Main St")?.lat == 10.0, "Successful geocode must be cached")
     }
 
-    // MARK: - 3. Failed Entry Behavior
+    // MARK: - 3. Legacy Failed Entry Behavior
 
-    @Test func failedEntryDoesNotResolve() {
-        let mock = MockCacheManager()
-        mock.storage["bad"] = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
+    @Test func legacyFailedEntryIsRetriedNotSkipped() {
+        let cache = MockCacheManager()
+        cache.storeLegacyFailure("bad")
+        let geocoder = MockGeocoder()
+        geocoder.succeed("bad", lat: 5.0, lng: 6.0)
 
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
+        let result = run(
+            makeManager(cache: cache, geocoder: geocoder),
+            addresses: [makeAddress(address: "bad")]
+        )
 
-        manager.process(addresses: [makeAddress(address: "bad")])
-
-        #expect(resolved.isEmpty, "Failed cache entry should never resolve to a pin")
+        #expect(geocoder.requestedAddresses == ["bad"], "Legacy failure must be retried, not dropped")
+        #expect(result.resolved.count == 1, "A retry that succeeds must produce a pin")
+        #expect(result.summary?.retriedCachedFailures == 1)
     }
 
-    @Test func failedEntryIsNotRetried() {
-        let mock = MockCacheManager()
-        mock.storage["bad"] = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
+    @Test func legacyFailedEntryNeverResolvesFromCacheDirectly() {
+        let cache = MockCacheManager()
+        cache.storeLegacyFailure("bad")
+        let geocoder = MockGeocoder()
+        geocoder.fail("bad")
 
-        let manager = GeocodingManager(cache: mock)
-        var completeFailed = -1
-        manager.onComplete = { completeFailed = $0 }
+        let result = run(
+            makeManager(cache: cache, geocoder: geocoder),
+            addresses: [makeAddress(address: "bad")]
+        )
 
-        manager.process(addresses: [makeAddress(address: "bad")])
-
-        // The failed entry is skipped (continue), so no cache misses, onComplete fires with 0
-        #expect(completeFailed == 0, "Failed entry should not trigger re-geocoding")
+        #expect(result.resolved.isEmpty, "A 0,0 failure entry must never be plotted as a pin")
+        #expect(result.summary?.failed == 1)
     }
 
     @Test func successfulEntryNotConfusedWithFailed() {
-        let mock = MockCacheManager()
-        mock.storage["good"] = CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: Date(), failed: false)
+        let cache = MockCacheManager()
+        cache.storeSuccess("good", lat: 37.0, lng: -122.0)
 
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
+        let result = run(
+            makeManager(cache: cache, geocoder: MockGeocoder()),
+            addresses: [makeAddress(address: "good")]
+        )
 
-        manager.process(addresses: [makeAddress(address: "good")])
-
-        #expect(resolved.count == 1, "Non-failed cache entry must resolve")
+        #expect(result.resolved.count == 1, "Non-failed cache entry must resolve")
     }
 
-    // MARK: - 4. TTL Expiry
+    // MARK: - 4. Failures Are Never Cached
 
-    @Test func staleSuccessBecomesaCacheMiss() {
-        // Use real CacheManager with short TTL
+    @Test func geocodeFailureIsNotCached() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder()
+        geocoder.fail("addr-0", reason: "timeout")
+
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: makeAddresses(count: 1))
+
+        #expect(result.summary?.failed == 1)
+        #expect(cache.storedFailureCount == 0, "Transient failures must not be persisted")
+        #expect(cache.coordinate(for: "addr-0") == nil, "Nothing should be cached for a failed address")
+    }
+
+    @Test func invalidAddressStringIsNotCached() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder()
+        geocoder.markInvalid("addr-0")
+
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: makeAddresses(count: 1))
+
+        #expect(result.summary?.invalidAddressStrings == 1)
+        #expect(result.summary?.failed == 1, "Invalid strings count toward the failure total")
+        #expect(cache.storedFailureCount == 0)
+    }
+
+    // MARK: - 5. TTL Expiry
+
+    @Test func staleSuccessIsReGeocoded() {
         let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 1, failedTtl: 1)
-        let staleDate = Date(timeIntervalSinceNow: -10) // 10 seconds ago, TTL is 1s
+        let staleDate = Date(timeIntervalSinceNow: -10) // TTL is 1s
         cache.store(coordinate: CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: staleDate), for: "addr")
 
-        let manager = GeocodingManager(cache: cache)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
+        let geocoder = MockGeocoder()
+        geocoder.succeed("addr", lat: 1.0, lng: 2.0)
 
-        manager.process(addresses: [makeAddress(address: "addr")])
+        let result = run(
+            makeManager(cache: cache, geocoder: geocoder),
+            addresses: [makeAddress(address: "addr")]
+        )
 
-        #expect(resolved.isEmpty, "Stale successful entry should NOT resolve — should become cache miss")
+        #expect(result.summary?.resolvedFromCache == 0, "Stale entry must not resolve from cache")
+        #expect(result.summary?.geocoded == 1, "Stale entry should be re-geocoded")
+        #expect(result.resolved.first?.coordinate.latitude == 1.0, "Fresh coordinate should win")
     }
 
-    @Test func staleFailedEntryIsRetried() {
-        // Use real CacheManager with short failed TTL
-        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 3600, failedTtl: 1)
-        let staleDate = Date(timeIntervalSinceNow: -10) // 10 seconds ago, failed TTL is 1s
-        cache.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: staleDate, failed: true), for: "addr")
-
-        let manager = GeocodingManager(cache: cache)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-
-        manager.process(addresses: [makeAddress(address: "addr")])
-
-        // The stale failed entry returns nil from cache, so the address becomes a cache miss.
-        // It won't resolve immediately (needs geocoding), but it's not silently dropped.
-        #expect(resolved.isEmpty, "Stale failed entry should become cache miss, not resolve from cache")
-    }
-
-    @Test func freshFailedEntryUsesShortTTL() {
-        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 3600, failedTtl: 5)
-        // Fresh failed entry (just now) — should be found by cache lookup
-        cache.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true), for: "addr")
-
-        let result = cache.coordinate(for: "addr")
-        #expect(result != nil, "Fresh failed entry should be returned")
-        #expect(result?.failed == true)
-    }
-
-    @Test func expiredFailedEntryReturnsNil() {
+    @Test func expiredLegacyFailedEntryReturnsNil() {
         let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 3600, failedTtl: 1)
         let staleDate = Date(timeIntervalSinceNow: -10)
         cache.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: staleDate, failed: true), for: "addr")
 
-        let result = cache.coordinate(for: "addr")
-        #expect(result == nil, "Expired failed entry should return nil to trigger retry")
+        #expect(cache.coordinate(for: "addr") == nil, "Expired failed entry should return nil")
     }
 
-    // MARK: - 5. Mixed Scenarios
+    @Test func freshLegacyFailedEntryIsStillReturnedByCache() {
+        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 3600, failedTtl: 5)
+        cache.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true), for: "addr")
 
-    @Test func mixOfHitsFailedAndMisses() {
-        let mock = MockCacheManager()
-        mock.storage["cached"] = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
-        mock.storage["failed"] = CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true)
-        // "uncached" is not in storage → cache miss
-
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
-
-        manager.process(addresses: [
-            makeAddress(id: "1", address: "cached"),
-            makeAddress(id: "2", address: "failed"),
-            makeAddress(id: "3", address: "uncached"),
-        ])
-
-        #expect(resolved.count == 1, "Only the successful cache hit should resolve")
-        #expect(resolved.first?.contactID == "1")
-    }
-
-    @Test func contactWithMultipleAddresses() {
-        let mock = MockCacheManager()
-        mock.storage["home"] = CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: Date())
-        mock.storage["work"] = CachedCoordinate(lat: 40.0, lng: -74.0, cachedAt: Date())
-
-        let manager = GeocodingManager(cache: mock)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
-
-        manager.process(addresses: [
-            ContactsManager.RawContactAddress(
-                contactID: "same-person",
-                fullName: "Jane Doe",
-                addressLabel: "Home",
-                addressString: "home",
-                thumbnailImageData: nil,
-                phoneNumber: nil
-            ),
-            ContactsManager.RawContactAddress(
-                contactID: "same-person",
-                fullName: "Jane Doe",
-                addressLabel: "Work",
-                addressString: "work",
-                thumbnailImageData: nil,
-                phoneNumber: nil
-            ),
-        ])
-
-        #expect(resolved.count == 2, "Both addresses for the same contact should resolve as separate pins")
-        let labels = Set(resolved.map(\.addressLabel))
-        #expect(labels == ["Home", "Work"])
+        let entry = cache.coordinate(for: "addr")
+        #expect(entry?.failed == true, "Cache still surfaces the entry; GeocodingManager decides to retry it")
     }
 
     // MARK: - 6. Metadata Passthrough
 
     @Test func allMetadataPreservedThroughCacheHit() {
-        let mock = MockCacheManager()
-        mock.storage["addr"] = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
-
-        let manager = GeocodingManager(cache: mock)
-        var resolved: MappedContact?
-        manager.onContactResolved = { resolved = $0 }
-        manager.onComplete = { _ in }
+        let cache = MockCacheManager()
+        cache.storeSuccess("addr", lat: 1.0, lng: 2.0)
 
         let imageData = Data([0xFF, 0xD8])
         let address = ContactsManager.RawContactAddress(
@@ -269,7 +237,9 @@ struct ContactPlottingTests {
             thumbnailImageData: imageData,
             phoneNumber: "+15551234567"
         )
-        manager.process(addresses: [address])
+
+        let result = run(makeManager(cache: cache, geocoder: MockGeocoder()), addresses: [address])
+        let resolved = result.resolved.first
 
         #expect(resolved?.contactID == "id-123")
         #expect(resolved?.fullName == "Full Name")
@@ -281,113 +251,333 @@ struct ContactPlottingTests {
         #expect(resolved?.coordinate.longitude == 2.0)
     }
 
+    @Test func metadataPreservedThroughGeocode() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder()
+        geocoder.succeed("addr", lat: 3.0, lng: 4.0)
+
+        let address = ContactsManager.RawContactAddress(
+            contactID: "geo-1",
+            fullName: "Geo User",
+            addressLabel: "Work",
+            addressString: "addr",
+            thumbnailImageData: nil,
+            phoneNumber: "+15559999999"
+        )
+
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: [address])
+
+        #expect(result.resolved.first?.contactID == "geo-1")
+        #expect(result.resolved.first?.phoneNumber == "+15559999999")
+        #expect(result.resolved.first?.coordinate.latitude == 3.0)
+    }
+
     // MARK: - 7. Proximity Sorting
 
     @Test func proximitySortOrdersNearestFirst() {
-        let mock = MockCacheManager()
-        mock.storage["far"]  = CachedCoordinate(lat: 48.8566, lng: 2.3522, cachedAt: Date())  // Paris
-        mock.storage["mid"]  = CachedCoordinate(lat: 40.7128, lng: -74.006, cachedAt: Date())  // NYC
-        mock.storage["near"] = CachedCoordinate(lat: 37.7749, lng: -122.4194, cachedAt: Date()) // SF
+        let cache = MockCacheManager()
+        cache.storeSuccess("far", lat: 48.8566, lng: 2.3522)     // Paris
+        cache.storeSuccess("mid", lat: 40.7128, lng: -74.006)    // NYC
+        cache.storeSuccess("near", lat: 37.7749, lng: -122.4194) // SF
 
-        let manager = GeocodingManager(cache: mock)
-        var order: [String] = []
-        manager.onContactResolved = { order.append($0.addressString) }
-        manager.onComplete = { _ in }
-
-        // User is in SF
         let sf = CLLocationCoordinate2D(latitude: 37.78, longitude: -122.42)
-        manager.process(addresses: [
-            makeAddress(id: "1", address: "far"),
-            makeAddress(id: "2", address: "mid"),
-            makeAddress(id: "3", address: "near"),
-        ], userLocation: sf)
+        let result = run(
+            makeManager(cache: cache, geocoder: MockGeocoder()),
+            addresses: [
+                makeAddress(id: "1", address: "far"),
+                makeAddress(id: "2", address: "mid"),
+                makeAddress(id: "3", address: "near"),
+            ],
+            userLocation: sf
+        )
 
-        #expect(order == ["near", "mid", "far"], "Should resolve nearest to farthest")
+        #expect(result.resolved.map(\.addressString) == ["near", "mid", "far"])
     }
 
     // MARK: - 8. Process Stability
 
     @Test func callingProcessTwiceDoesNotDuplicateHits() {
-        let mock = MockCacheManager()
-        mock.storage["addr"] = CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: Date())
+        let cache = MockCacheManager()
+        cache.storeSuccess("addr")
 
-        let manager = GeocodingManager(cache: mock)
-        var resolvedCount = 0
-        manager.onContactResolved = { _ in resolvedCount += 1 }
-        manager.onComplete = { _ in }
+        let manager = makeManager(cache: cache, geocoder: MockGeocoder())
+        let addresses = [makeAddress(address: "addr")]
 
-        let addr = makeAddress(address: "addr")
-        manager.process(addresses: [addr])
-        manager.process(addresses: [addr])
+        let first = run(manager, addresses: addresses)
+        let second = run(manager, addresses: addresses)
 
-        #expect(resolvedCount == 2, "Each process call should resolve independently")
+        #expect(first.resolved.count == 1)
+        #expect(second.resolved.count == 1, "Each process call resolves independently")
+        #expect(second.summary?.resolvedFromCache == 1, "Counters reset between runs")
     }
 
     @Test func emptyAddressListCompletesImmediately() {
-        let mock = MockCacheManager()
-        let manager = GeocodingManager(cache: mock)
-        var completeCalled = false
-        var failedCount = -1
-        manager.onComplete = { count in
-            completeCalled = true
-            failedCount = count
-        }
+        let result = run(makeManager(cache: MockCacheManager(), geocoder: MockGeocoder()), addresses: [])
 
-        manager.process(addresses: [])
+        #expect(result.reportedFailureCount == 0)
+        #expect(result.summary == GeocodingManager.Summary())
+    }
 
-        #expect(completeCalled)
-        #expect(failedCount == 0)
+    @Test func cancelStopsInFlightRequestAndPersists() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        let manager = makeManager(cache: cache, geocoder: geocoder)
+
+        manager.cancel()
+
+        #expect(geocoder.cancelInFlightCallCount == 1)
+        #expect(cache.saveToDiskCallCount == 1, "Cancel should persist whatever progress was made")
     }
 
     // MARK: - 9. Cache Persistence Integration
 
     @Test func successfulEntryPersistsAcrossReloads() {
         let url = makeTempFileURL()
-        let cache1 = CacheManager(fileURL: url)
-        cache1.store(coordinate: CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: Date()), for: "addr")
-        cache1.saveToDisk()
+        let first = CacheManager(fileURL: url)
+        first.store(coordinate: CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: Date()), for: "addr")
+        first.saveToDisk()
 
-        let cache2 = CacheManager(fileURL: url)
-        let manager = GeocodingManager(cache: cache2)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
+        let reloaded = CacheManager(fileURL: url)
+        let result = run(
+            makeManager(cache: reloaded, geocoder: MockGeocoder()),
+            addresses: [makeAddress(address: "addr")]
+        )
 
-        manager.process(addresses: [makeAddress(address: "addr")])
-
-        #expect(resolved.count == 1, "Entry saved to disk should survive reload and resolve")
+        #expect(result.resolved.count == 1, "Entry saved to disk should survive reload and resolve")
     }
 
-    @Test func failedEntryPersistsAcrossReloads() {
+    @Test func legacyFailedEntryOnDiskIsRetriedAfterReload() {
         let url = makeTempFileURL()
-        let cache1 = CacheManager(fileURL: url)
-        cache1.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true), for: "bad")
-        cache1.saveToDisk()
+        let first = CacheManager(fileURL: url)
+        first.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), failed: true), for: "bad")
+        first.saveToDisk()
 
-        let cache2 = CacheManager(fileURL: url)
-        let manager = GeocodingManager(cache: cache2)
-        var resolved: [MappedContact] = []
-        manager.onContactResolved = { resolved.append($0) }
-        manager.onComplete = { _ in }
+        let reloaded = CacheManager(fileURL: url)
+        let geocoder = MockGeocoder()
+        geocoder.succeed("bad", lat: 9.0, lng: 9.0)
 
-        manager.process(addresses: [makeAddress(address: "bad")])
+        let result = run(
+            makeManager(cache: reloaded, geocoder: geocoder),
+            addresses: [makeAddress(address: "bad")]
+        )
 
-        #expect(resolved.isEmpty, "Failed entry should persist across reload and still be skipped")
+        #expect(geocoder.requestedAddresses == ["bad"], "Persisted legacy failures must be retried")
+        #expect(result.resolved.count == 1)
     }
 
-    // MARK: - 10. Separate TTLs for Success vs Failed
+    // MARK: - 10. Use Cases UC1–UC10
 
-    @Test func successUsesLongTTLAndFailedUsesShortTTL() {
-        let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 3600, failedTtl: 5)
+    /// UC1: Cold start with an empty cache — everything is geocoded and plotted.
+    @Test func uc1_coldStartGeocodesEverything() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder.alwaysSucceeding()
 
-        // Store a 30-second-old success — should still be valid (TTL is 3600)
-        let recentDate = Date(timeIntervalSinceNow: -30)
-        cache.store(coordinate: CachedCoordinate(lat: 1.0, lng: 2.0, cachedAt: recentDate), for: "good")
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: makeAddresses(count: 50))
 
-        // Store a 30-second-old failure — should be expired (failed TTL is 5)
-        cache.store(coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: recentDate, failed: true), for: "bad")
+        #expect(result.resolved.count == 50)
+        #expect(result.summary?.geocoded == 50)
+        #expect(result.summary?.failed == 0)
+        #expect(result.reportedFailureCount == 0)
+        #expect(cache.storage.count == 50, "Every success should be cached")
+        #expect(cache.storedFailureCount == 0)
+    }
 
-        #expect(cache.coordinate(for: "good") != nil, "30s-old success should be valid with 3600s TTL")
-        #expect(cache.coordinate(for: "bad") == nil, "30s-old failure should be expired with 5s TTL")
+    /// UC2: Warm start with a full cache — instant pins, no geocoding, no progress banner.
+    @Test func uc2_warmStartResolvesEntirelyFromCache() {
+        let cache = MockCacheManager()
+        let addresses = makeAddresses(count: 50)
+        for address in addresses {
+            cache.storeSuccess(address.addressString, lat: 37.0, lng: -122.0)
+        }
+        let geocoder = MockGeocoder()
+
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: addresses)
+
+        #expect(result.resolved.count == 50)
+        #expect(result.summary?.resolvedFromCache == 50)
+        #expect(result.summary?.geocoded == 0)
+        #expect(geocoder.requestedAddresses.isEmpty, "No geocoding on a fully warm cache")
+        #expect(result.progressEvents.isEmpty, "No progress events means no banner")
+        #expect(cache.saveToDiskCallCount == 0, "Nothing new to persist")
+    }
+
+    /// UC3: Warm start plus newly added contacts — cached pins plus geocoded new ones.
+    @Test func uc3_warmStartWithNewContacts() {
+        let cache = MockCacheManager()
+        let cached = makeAddresses(count: 50, prefix: "cached")
+        for address in cached {
+            cache.storeSuccess(address.addressString)
+        }
+        let fresh = makeAddresses(count: 5, prefix: "new")
+        let geocoder = MockGeocoder.alwaysSucceeding()
+
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: cached + fresh)
+
+        #expect(result.resolved.count == 55)
+        #expect(result.summary?.resolvedFromCache == 50)
+        #expect(result.summary?.geocoded == 5)
+        #expect(geocoder.requestedAddresses.count == 5, "Only the new addresses are geocoded")
+    }
+
+    /// UC4: Transient geocoding failures are not cached, so the next launch retries them.
+    @Test func uc4_transientFailuresRetryOnNextLaunch() {
+        let cache = MockCacheManager()
+        let addresses = makeAddresses(count: 50)
+        let failing = ["addr-7", "addr-19", "addr-33"]
+
+        let firstGeocoder = MockGeocoder.alwaysSucceeding()
+        for address in failing {
+            firstGeocoder.fail(address)
+        }
+
+        let firstRun = run(makeManager(cache: cache, geocoder: firstGeocoder), addresses: addresses)
+
+        #expect(firstRun.resolved.count == 47)
+        #expect(firstRun.summary?.failed == 3)
+        #expect(cache.storedFailureCount == 0, "Transient failures must not be cached")
+        for address in failing {
+            #expect(cache.coordinate(for: address) == nil)
+        }
+
+        // Next launch: the network is healthy again.
+        let secondGeocoder = MockGeocoder.alwaysSucceeding()
+        let secondRun = run(makeManager(cache: cache, geocoder: secondGeocoder), addresses: addresses)
+
+        #expect(secondGeocoder.requestedAddresses.sorted() == failing.sorted(), "Only the 3 failures retry")
+        #expect(secondRun.resolved.count == 50, "All 50 contacts now appear")
+        #expect(secondRun.summary?.resolvedFromCache == 47)
+        #expect(secondRun.summary?.geocoded == 3)
+    }
+
+    /// UC5: The permission-grant notification must not interrupt the initial geocoding pass.
+    @Test func uc5_storeChangeDuringInitialLoadIsDeferred() {
+        let coalescer = ContactChangeCoalescer()
+
+        #expect(coalescer.noteChange() == .deferUntilInitialLoadCompletes)
+        #expect(coalescer.hasPendingChange)
+        #expect(coalescer.noteInitialLoadComplete(), "Deferred change should run once the load finishes")
+        #expect(coalescer.noteChange() == .scheduleRefresh, "Later changes refresh immediately")
+    }
+
+    @Test func uc5_initialGeocodingCompletesDespiteStoreChangeMidRun() {
+        let cache = MockCacheManager()
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        let manager = makeManager(cache: cache, geocoder: geocoder)
+        let coalescer = ContactChangeCoalescer()
+
+        var decisionMidRun: ContactChangeCoalescer.Decision?
+        var resolved: [MappedContact] = []
+        manager.onContactResolved = { resolved.append($0) }
+        manager.onProgress = { completed, _ in
+            // A store change lands after the first geocode, as a permission grant would.
+            if completed == 1, decisionMidRun == nil {
+                decisionMidRun = coalescer.noteChange()
+            }
+        }
+        manager.onComplete = { _ in _ = coalescer.noteInitialLoadComplete() }
+
+        manager.process(addresses: makeAddresses(count: 20))
+
+        #expect(decisionMidRun == .deferUntilInitialLoadCompletes, "Must not cancel the initial pass")
+        #expect(resolved.count == 20, "Every contact still gets plotted")
+        #expect(coalescer.isInitialLoadComplete)
+    }
+
+    /// UC6: A contact deleted between launches has its pin removed by the diff.
+    @Test func uc6_deletedContactIsRemovedByDiff() {
+        let existing = (0..<50).map { index in
+            MappedContact(
+                contactID: "\(index)",
+                fullName: "Contact \(index)",
+                addressLabel: "Home",
+                addressString: "addr-\(index)",
+                coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 2),
+                thumbnailImageData: nil,
+                phoneNumber: nil
+            )
+        }
+        let remaining = makeAddresses(count: 50).filter { $0.contactID != "12" }
+
+        let diff = ContactDiffer.diff(newAddresses: remaining, existing: existing)
+
+        #expect(diff.toRemoveIndices == [12], "Only the deleted contact is removed")
+        #expect(diff.toAdd.isEmpty, "Nothing new to geocode")
+    }
+
+    /// UC7: An unparseable address is skipped this run and retried on the next one.
+    @Test func uc7_invalidAddressIsRetriedNextLaunch() {
+        let cache = MockCacheManager()
+        let firstGeocoder = MockGeocoder.alwaysSucceeding()
+        firstGeocoder.markInvalid("addr-0")
+
+        let firstRun = run(makeManager(cache: cache, geocoder: firstGeocoder), addresses: makeAddresses(count: 3))
+
+        #expect(firstRun.resolved.count == 2)
+        #expect(firstRun.summary?.invalidAddressStrings == 1)
+        #expect(cache.coordinate(for: "addr-0") == nil, "Invalid strings must not be cached")
+
+        let secondGeocoder = MockGeocoder.alwaysSucceeding()
+        let secondRun = run(makeManager(cache: cache, geocoder: secondGeocoder), addresses: makeAddresses(count: 3))
+
+        #expect(secondGeocoder.requestedAddresses == ["addr-0"], "The invalid address is retried")
+        #expect(secondRun.resolved.count == 3)
+    }
+
+    /// UC8: Regression reproduction — a cache full of legacy failures used to plot nothing.
+    @Test func uc8_cacheFullOfLegacyFailuresIsFullyRetried() {
+        let cache = MockCacheManager()
+        let addresses = makeAddresses(count: 50)
+        for address in addresses {
+            cache.storeLegacyFailure(address.addressString)
+        }
+        let geocoder = MockGeocoder.alwaysSucceeding()
+
+        let result = run(makeManager(cache: cache, geocoder: geocoder), addresses: addresses)
+
+        #expect(geocoder.requestedAddresses.count == 50, "All 50 must be retried, not skipped")
+        #expect(result.resolved.count == 50, "Previously invisible contacts now appear")
+        #expect(result.summary?.retriedCachedFailures == 50)
+        #expect(result.summary?.resolvedFromCache == 0)
+        #expect(cache.storedFailureCount == 0, "Retried successes overwrite the legacy failure entries")
+    }
+
+    /// UC9: Mixed cache state — hits resolve, legacy failures retry, misses geocode.
+    @Test func uc9_mixOfHitsLegacyFailuresAndMisses() {
+        let cache = MockCacheManager()
+        let hits = makeAddresses(count: 30, prefix: "hit")
+        let legacyFailures = makeAddresses(count: 10, prefix: "legacy")
+        let misses = makeAddresses(count: 10, prefix: "miss")
+
+        for address in hits {
+            cache.storeSuccess(address.addressString)
+        }
+        for address in legacyFailures {
+            cache.storeLegacyFailure(address.addressString)
+        }
+
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        let result = run(
+            makeManager(cache: cache, geocoder: geocoder),
+            addresses: hits + legacyFailures + misses
+        )
+
+        #expect(result.summary?.resolvedFromCache == 30)
+        #expect(result.summary?.retriedCachedFailures == 10)
+        #expect(result.summary?.geocoded == 20, "10 legacy failures + 10 misses are geocoded")
+        #expect(result.resolved.count == 50, "Nothing is silently lost")
+        #expect(result.summary?.attempted == 50)
+    }
+
+    /// UC10: A burst of store-change notifications collapses into a single refresh.
+    @Test func uc10_notificationStormCollapsesIntoOneRefresh() {
+        let coalescer = ContactChangeCoalescer()
+
+        for _ in 0..<5 {
+            #expect(coalescer.noteChange() == .deferUntilInitialLoadCompletes)
+        }
+
+        #expect(coalescer.noteInitialLoadComplete(), "The burst yields exactly one refresh")
+        #expect(coalescer.hasPendingChange == false)
+        #expect(coalescer.noteInitialLoadComplete() == false, "Later completions must not re-trigger")
     }
 }

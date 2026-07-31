@@ -39,13 +39,15 @@ class GeocodingManager {
     private var isCancelled = false
     private var summary = Summary()
 
+    /// Defaults are built inside the body rather than as default argument expressions,
+    /// which are evaluated in a nonisolated context and cannot touch main-actor state.
     /// - Parameter geocoder: Defaults to `MapKitGeocoder`. Injected in tests to run offline.
     init(
-        cache: CacheManaging = CacheManager.shared,
+        cache: CacheManaging? = nil,
         geocoder: AddressGeocoding? = nil,
         requestDelay: TimeInterval = 0.15
     ) {
-        self.cache = cache
+        self.cache = cache ?? CacheManager.shared
         self.geocoder = geocoder ?? MapKitGeocoder()
         self.requestDelay = requestDelay
     }
@@ -137,74 +139,96 @@ class GeocodingManager {
     }
 
     private func geocodeSequentially(addresses: [ContactsManager.RawContactAddress], index: Int, total: Int) {
-        guard !isCancelled, index < addresses.count else {
-            cache.saveToDisk()
-            finish()
-            return
-        }
+        var index = index
 
-        let address = addresses[index]
-
-        geocoder.geocode(address.addressString) { [weak self] outcome in
-            guard let self, !self.isCancelled else { return }
-
-            switch outcome {
-            case .success(let coordinate):
-                let cached = CachedCoordinate(
-                    lat: coordinate.latitude,
-                    lng: coordinate.longitude,
-                    cachedAt: Date()
-                )
-                self.cache.store(coordinate: cached, for: address.addressString)
-                self.summary.geocoded += 1
-
-                let contact = MappedContact(
-                    contactID: address.contactID,
-                    fullName: address.fullName,
-                    addressLabel: address.addressLabel,
-                    addressString: address.addressString,
-                    coordinate: coordinate,
-                    thumbnailImageData: address.thumbnailImageData,
-                    phoneNumber: address.phoneNumber
-                )
-                self.onContactResolved?(contact)
-
-            case .invalidAddress:
-                // Deliberately NOT cached as a failure: constructing the request is free
-                // (no network call) and can fail for valid addresses due to formatting or
-                // encoding quirks. Retry on the next launch.
-                self.summary.failed += 1
-                self.summary.invalidAddressStrings += 1
-                #if DEBUG
-                print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
-                #endif
-
-            case .failed(let reason):
-                // Deliberately NOT cached as a failure. A transient network error or rate limit
-                // must not hide this contact until a cache entry expires — retry next launch.
-                self.summary.failed += 1
-                #if DEBUG
-                print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(reason ?? "no results")")
-                #endif
-            }
-
-            let completed = index + 1
-            self.onProgress?(completed, total)
-
-            // Persist every 10 geocodes to protect progress if the app is killed
-            if completed % 10 == 0 {
-                self.cache.saveToDisk()
-            }
-
-            guard self.requestDelay > 0 else {
-                self.geocodeSequentially(addresses: addresses, index: index + 1, total: total)
+        while true {
+            guard !isCancelled, index < addresses.count else {
+                cache.saveToDisk()
+                finish()
                 return
             }
 
-            // Delay before next geocode to respect Apple rate limits
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.requestDelay) {
-                self.geocodeSequentially(addresses: addresses, index: index + 1, total: total)
+            let address = addresses[index]
+            let completed = index + 1
+
+            // A geocoder that calls back before `geocode` returns advances this loop instead
+            // of recursing, so a 1000-address run doesn't build a 1000-frame stack. The
+            // production geocoder is asynchronous and takes the scheduled path below.
+            var isCallbackOnStack = true
+            var advanceInLoop = false
+
+            geocoder.geocode(address.addressString) { [weak self] outcome in
+                guard let self, !self.isCancelled else { return }
+
+                self.record(outcome: outcome, for: address)
+                self.onProgress?(completed, total)
+
+                // Persist every 10 geocodes to protect progress if the app is killed
+                if completed % 10 == 0 {
+                    self.cache.saveToDisk()
+                }
+
+                guard self.requestDelay > 0 else {
+                    if isCallbackOnStack {
+                        advanceInLoop = true
+                    } else {
+                        self.geocodeSequentially(addresses: addresses, index: completed, total: total)
+                    }
+                    return
+                }
+
+                // Delay before next geocode to respect Apple rate limits
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.requestDelay) {
+                    self.geocodeSequentially(addresses: addresses, index: completed, total: total)
+                }
             }
+
+            isCallbackOnStack = false
+
+            // The callback scheduled the next step itself; this walk is done here.
+            guard advanceInLoop else { return }
+            index = completed
+        }
+    }
+
+    private func record(outcome: GeocodeOutcome, for address: ContactsManager.RawContactAddress) {
+        switch outcome {
+        case .success(let coordinate):
+            let cached = CachedCoordinate(
+                lat: coordinate.latitude,
+                lng: coordinate.longitude,
+                cachedAt: Date()
+            )
+            cache.store(coordinate: cached, for: address.addressString)
+            summary.geocoded += 1
+
+            onContactResolved?(MappedContact(
+                contactID: address.contactID,
+                fullName: address.fullName,
+                addressLabel: address.addressLabel,
+                addressString: address.addressString,
+                coordinate: coordinate,
+                thumbnailImageData: address.thumbnailImageData,
+                phoneNumber: address.phoneNumber
+            ))
+
+        case .invalidAddress:
+            // Deliberately NOT cached as a failure: constructing the request is free
+            // (no network call) and can fail for valid addresses due to formatting or
+            // encoding quirks. Retry on the next launch.
+            summary.failed += 1
+            summary.invalidAddressStrings += 1
+            #if DEBUG
+            print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
+            #endif
+
+        case .failed(let reason):
+            // Deliberately NOT cached as a failure. A transient network error or rate limit
+            // must not hide this contact until a cache entry expires — retry next launch.
+            summary.failed += 1
+            #if DEBUG
+            print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(reason ?? "no results")")
+            #endif
         }
     }
 }

@@ -19,12 +19,7 @@ struct ContactPlottingTests {
 
     // MARK: - Helpers
 
-    private struct RunResult {
-        var resolved: [MappedContact] = []
-        var progressEvents: [(completed: Int, total: Int)] = []
-        var summary: GeocodingManager.Summary?
-        var reportedFailureCount: Int?
-    }
+    private typealias RunResult = GeocodingRunResult
 
     private func makeAddress(
         id: String = "1",
@@ -53,7 +48,7 @@ struct ContactPlottingTests {
     }
 
     private func makeManager(cache: CacheManaging, geocoder: AddressGeocoding) -> GeocodingManager {
-        GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0)
+        GeocodingRunner.makeManager(cache: cache, geocoder: geocoder)
     }
 
     /// Runs `process()` to completion and captures everything the manager reported.
@@ -62,14 +57,7 @@ struct ContactPlottingTests {
         addresses: [ContactsManager.RawContactAddress],
         userLocation: CLLocationCoordinate2D? = nil
     ) -> RunResult {
-        var result = RunResult()
-        manager.onContactResolved = { result.resolved.append($0) }
-        manager.onProgress = { completed, total in result.progressEvents.append((completed, total)) }
-        manager.onSummary = { result.summary = $0 }
-        manager.onComplete = { result.reportedFailureCount = $0 }
-
-        manager.process(addresses: addresses, userLocation: userLocation)
-        return result
+        GeocodingRunner.run(manager, addresses: addresses, userLocation: userLocation)
     }
 
     // MARK: - 1. Basic Cache Hit Resolution

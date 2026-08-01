@@ -1,4 +1,5 @@
 # MapMyFriends Security Fixes
+> **Status: completed — historical record.** All fixes below shipped. Line numbers refer to the code as it was at the time and have since moved. For current behaviour see `README.md`; for the automated privacy checks see `NoDataExfiltrationTests`.
 This plan addresses the high and medium severity security issues found in the project\.
 ## 🔴 \#1 — Sensitive PII stored unencrypted on disk
 `CacheManager.swift` writes contact addresses and GPS coordinates as plain\-text JSON to the Documents directory with no iOS Data Protection\.

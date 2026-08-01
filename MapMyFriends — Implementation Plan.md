@@ -1,4 +1,5 @@
 # MapMyFriends — Implementation Plan
+> **Status: completed — historical record.** This is the original build-out plan; every step shipped. It describes the app as first assembled, not as it stands now. For current architecture see `README.md`, and for the full spec see `plan.MD`.
 ## Summary
 iOS app that reads contacts, geocodes addresses, and plots them as clustered pins on a map\. SwiftUI app lifecycle hosting a UIKit MapViewController\. Swift 6 strict concurrency\. iOS 26\.4 target\.
 ## Key Decisions

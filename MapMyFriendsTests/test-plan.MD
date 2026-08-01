@@ -1,13 +1,17 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 91 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
+The project has 119 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline and synchronously — no test contacts Apple's geocoding service. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
 
-- `CacheManager`: Conforms to the `CacheManaging` protocol and accepts `init(fileURL:)` so tests use isolated temp files instead of the real documents directory. The `shared` singleton is used in production.
-- `GeocodingManager`: Accepts a `CacheManaging` dependency via init (defaults to `CacheManager.shared`), enabling mock injection in tests via `MockCacheManager`.
+- `CacheManager`: Conforms to the `CacheManaging` protocol and accepts `init(fileURL:ttl:failedTtl:)` so tests use isolated temp files and short TTLs instead of the real documents directory. The `shared` singleton is used in production.
+- `GeocodingManager`: Accepts `CacheManaging`, `AddressGeocoding`, and `requestDelay` via init (all defaulted for production). Tests inject `MockCacheManager` + `MockGeocoder` with `requestDelay: 0`.
+- `AddressGeocoding`: Protocol seam over MapKit geocoding. `MapKitGeocoder` wraps `MKGeocodingRequest` in production; `MockGeocoder` returns scripted `GeocodeOutcome` values (success / invalidAddress / failed) synchronously in tests. Without this seam every cache miss would hit the live network.
+- `ContactChangeCoalescer`: The `CNContactStoreDidChange` initial-load gate, extracted from `MapViewController` so it can be unit tested without UIKit. The 1-second debounce timer itself stays in the controller and is covered by the manual checklist.
+- `GeocodingRunner` (`Support/`): Shared harness that runs one `process()` call and captures resolved contacts, progress events, the summary, and the completion count.
+- `ContactFixtures` (`Fixtures/`): Loads `contacts-1000.json` from disk via `#filePath` and builds pre-seeded caches and geocoders from it.
 - `ContactsManager`: No mock needed — contact fetching requires a real `CNContactStore` and is impractical to unit test.
 - `MapViewController`: No mock needed — it's a coordinator best covered by the manual testing checklist.
 
@@ -55,7 +59,7 @@ Pure function — no mocking needed.
 - Verifies correct `toRemoveIndices` and `toAdd` arrays using `(contactID, addressString)` as identity key
 
 ### 6. GeocodingManager Tests (`GeocodingManagerTests.swift`)
-Uses `MockCacheManager` to isolate from disk I/O and network.
+Uses `MockCacheManager` to isolate from disk I/O, and `MockGeocoder` to isolate from the network.
 - **All cache hits — no geocoding**: Process addresses that are all cached, verify `onContactResolved` called for each, `onComplete` called, no network requests
 - **All cache hits — onComplete fires**: Verify `onComplete` is called even when there are zero misses
 - **Empty input**: Process an empty array, verify `onComplete` fires immediately
@@ -65,8 +69,9 @@ Uses `MockCacheManager` to isolate from disk I/O and network.
 - **Metadata preservation**: Verify contactID, fullName, addressLabel, addressString passthrough
 - **Phone number preserved**: Verify phone number passes through from raw address to resolved contact
 - **Nil phone number preserved**: Verify nil phone number is not lost
-- **Failed cache entry skipped**: Failed entries don't resolve and don't trigger geocoding
-- **Mix of success and failed**: Only non-failed entries resolve
+- **Legacy failed entry retried**: A `failed: true` entry is re-geocoded rather than skipped, and resolves when the retry succeeds
+- **Repeat failure reported**: A retry that fails again is counted in `onComplete`, and no new failure entry is written to the cache
+- **Mix of success and legacy failed**: The cache hit resolves and the legacy failure resolves after retry
 - **onComplete reports zero for all hits**: Failure count is 0 when all are cache hits
 - **Proximity sort orders nearest first**: With user location, nearest contact resolves first
 - **No user location preserves order**: Without user location, original order is kept
@@ -98,35 +103,71 @@ Tests for the UserDefaults-backed feature flag system.
 - **Setting standard defaults affects flags**: Writing UserDefaults changes flag values
 
 ### 10. Contact Plotting Tests (`ContactPlottingTests.swift`)
-Comprehensive end-to-end tests for the full plotting pipeline (22 test cases).
+End-to-end tests for the full plotting pipeline, including the ten use cases from the contact-plotting bug investigation (30 test cases).
 - **Basic cache hit resolution**: Single and multiple cached addresses resolve to pins
-- **Cache miss handling**: Uncached addresses don't resolve from cache
-- **Failed entry behavior**: Failed entries skip silently, don't retry, not confused with successes
-- **TTL expiry**: Stale successes become misses; stale failures trigger retry; separate TTLs validated
-- **Mixed scenarios**: Hits + failed + misses together; contacts with multiple addresses
-- **Metadata passthrough**: All fields (contactID, name, label, address, thumbnail, phone, coordinates) survive the pipeline
+- **Cache miss handling**: Uncached addresses are geocoded and the result is cached
+- **Legacy failed entries**: Treated as cache misses and retried; a `0,0` failure entry is never plotted as a pin
+- **Failures are never cached**: Neither geocode failures nor invalid address strings are written to the cache
+- **TTL expiry**: Stale successes are re-geocoded; expired entries return nil from the cache
+- **Metadata passthrough**: All fields (contactID, name, label, address, thumbnail, phone, coordinates) survive both the cache path and the geocode path
 - **Proximity sorting**: SF/NYC/Paris ordered by distance to user location
-- **Process stability**: Double-call doesn't duplicate; empty input completes immediately
-- **Cache persistence integration**: Entries survive save/reload for both success and failure
-- **Dual TTL validation**: 30s-old success valid with long TTL; 30s-old failure expired with short TTL
+- **Process stability**: Double-call doesn't duplicate; counters reset per run; empty input completes immediately; cancel stops the in-flight request and persists
+- **Cache persistence integration**: Successful entries survive save/reload; persisted legacy failures are retried after reload
+- **UC1–UC10**: Cold start, warm start, warm start with new contacts, transient failure recovery, permission-grant deferral, contact deletion, invalid address retry, a cache full of legacy failures, mixed cache state, and a notification storm
+
+### 11. Contact Plotting Scale Tests (`ContactPlottingScaleTests.swift`)
+Drives the full 1000-contact fixture through the pipeline (16 test cases). These exist because the original regression was scale-dependent: at 1000 contacts a single mishandled cache state silently removes hundreds of pins.
+- **Fixture integrity**: 1000 unique IDs, addresses, and coordinates; multi-line addresses; valid lat/lng ranges
+- **Global coverage**: All 50 states plus DC, 40+ countries, and latitude/longitude spread across the inhabited continents
+- **Cold start**: All 1000 geocoded, plotted, and cached; every coordinate survives the pipeline unchanged
+- **Progress reporting**: One event per geocoded address with a consistent total
+- **Warm start**: All 1000 resolve from cache with zero geocodes and no progress banner
+- **Warm start with new contacts**: 950 cached + 50 new — only the new ones are geocoded
+- **Transient failure recovery**: 143 failures plot nothing this launch, are not cached, and all resolve on the next launch
+- **Cache full of legacy failures**: All 1000 retried and recovered — the reported bug, reproduced at full scale
+- **Total outage**: 500 failures leave the cache untouched and every contact retries afterwards
+- **Invalid addresses**: 40 unparseable strings are counted, uncached, and retried
+- **Mixed cache state**: 700 hits + 150 legacy failures + 150 misses = 1000 pins, nothing lost or duplicated
+- **Global proximity ordering**: All 1000 pins arrive nearest-first by real distance from San Francisco
+- **Diffing at scale**: 100 deletions and 100 additions computed correctly
+- **Persistence at scale**: 1000 entries survive a disk round trip
 
 ## Integration Tests
 
-### 9. Cache Persistence Integration (`CacheIntegrationTests.swift`)
+### 12. Cache Persistence Integration (`CacheIntegrationTests.swift`)
 End-to-end test using a real temp file (no mocks).
 - **Write → kill → read**: Create a CacheManager with a temp file, store entries, save, deallocate, create a new instance from the same file, verify all entries are present
 - **Concurrent reads**: Store entries, save, read from multiple threads — verify no crashes (smoke test)
 
+## Test Fixture
+`Fixtures/contacts-1000.json` holds 1000 contacts with unique addresses and coordinates, covering all 50 US states plus DC and 65 cities across 6 continents. US and international addresses use different multi-line formats, mirroring `CNPostalAddressFormatter` output. Coordinates are real city centres with a small deterministic offset so no two contacts share a pin.
+
+The file is read straight off disk through `#filePath` rather than the test bundle, so it does not depend on resource copying. `generate_contacts_fixture.py` sits beside it and regenerates the JSON byte-for-byte:
+```
+python3 MapMyFriendsTests/Fixtures/generate_contacts_fixture.py
+```
+
 ## What's NOT Tested (and why)
 - **ContactsManager**: Requires a real `CNContactStore` with contacts permission. Impractical in CI.
-- **MapViewController**: UIKit lifecycle coordination. Best covered by the manual testing checklist in `plan.MD`.
-- **MKGeocodingRequest networking**: We don't test Apple's geocoding service. The GeocodingManager tests verify orchestration logic only.
+- **MapViewController**: UIKit lifecycle coordination. Best covered by the manual testing checklist in `plan.MD`. The initial-load gate it delegates to (`ContactChangeCoalescer`) *is* unit tested; the 1-second debounce timer is not.
+- **MKGeocodingRequest networking**: We don't test Apple's geocoding service. `MapKitGeocoder` is the thin, untested adapter around it; everything above the `AddressGeocoding` seam is fully covered.
+
+## Known Failing Tests (pre-existing, out of scope)
+- `NoDataExfiltrationTests/noForbiddenNetworkPatterns` — the scanner flags the legitimate GitHub link at `MapMyFriends/Views/AboutView.swift:109`. Needs a policy decision: allowlist the line or move the URL out of source.
+- `ContactAnnotationViewTests/validAvatarSwitchesMarkerToGray` — relates to the disabled contact-avatar feature.
 
 ## File Structure
 ```
 MapMyFriendsTests/
+├── Fixtures/
+│   ├── contacts-1000.json
+│   ├── generate_contacts_fixture.py
+│   └── ContactFixtures.swift
 ├── Mocks/
-│   └── MockCacheManager.swift
+│   ├── MockCacheManager.swift
+│   └── MockGeocoder.swift
+├── Support/
+│   └── GeocodingRunner.swift
 ├── CachedCoordinateTests.swift
 ├── CacheManagerTests.swift
 ├── CacheManagerThreadSafetyTests.swift
@@ -134,6 +175,7 @@ MapMyFriendsTests/
 ├── ContactAnnotationTests.swift
 ├── ContactDifferTests.swift
 ├── ContactPlottingTests.swift
+├── ContactPlottingScaleTests.swift
 ├── GeocodingManagerTests.swift
 ├── AnnotationViewTests.swift
 ├── FeatureFlagsTests.swift

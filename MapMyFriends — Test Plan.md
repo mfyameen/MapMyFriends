@@ -1,4 +1,5 @@
 # MapMyFriends — Test Plan
+> **Status: superseded — historical record.** This was the plan for introducing the test target, written when none existed. The target now has 119 tests. The living test plan is `MapMyFriendsTests/test-plan.MD`; read that instead.
 ## Overview
 The app currently has no test targets\. This plan covers unit tests, integration tests, and a testability refactor needed to make the managers mockable\. UI tests are deferred since the app is single\-screen and behavior is best validated manually per the existing testing checklist in `plan.MD`\.
 ## Testability Refactor \(prerequisite\)

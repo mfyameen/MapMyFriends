@@ -30,7 +30,7 @@ Code available at https://github.com/mfyameen/MapMyFriends
 
 ## Requirements
 
-- iOS 26.4+
+- iOS 26.0+ (iPhone only)
 - Xcode 26+
 - Swift 5 language mode with main-actor-by-default isolation
 - No third-party dependencies
@@ -71,6 +71,7 @@ MapMyFriends/
 │   ├── ContactAnnotationView.swift  # Blue person pin with reuse-safe styling
 │   ├── ClusterAnnotationView.swift  # Circle with count badge
 │   └── MapViewControllerWrapper.swift # UIViewControllerRepresentable bridge
+├── PrivacyInfo.xcprivacy            # Privacy manifest (no tracking, no collected data)
 ├── Settings.bundle/                 # iOS Settings app toggles for feature flags
 └── Assets.xcassets/                 # App icon, GitHub logo (light/dark)
 ```
@@ -164,6 +165,12 @@ User-configurable options are available in **iOS Settings → Map My Friends**:
 - [ ] Address type color coding — different pin colors for Home vs Work vs Other
 - [ ] Fix contact avatar on pins — disabled due to rendering issues
 
+## App Store
+
+- Bundle ID `com.Rosedale.MapMyFriends`, published by Rosedale Co
+- Listing copy, review notes, and privacy answers: [`AppStore/listing.md`](AppStore/listing.md)
+- Privacy policy and support pages live in [`docs/`](docs/) and are served by GitHub Pages at https://mfyameen.github.io/MapMyFriends/
+
 ## License
 
-<!-- MIT license -->
+Apache License 2.0. See [LICENSE](LICENSE).

@@ -33,6 +33,12 @@ struct NoDataExfiltrationTests {
         ("Sentry SDK", "import Sentry"),
     ]
 
+    /// User-tappable links opened in Safari via SwiftUI `Link`. These send no app data,
+    /// so a line containing exactly one of them is exempt from the URL patterns.
+    private static let allowedURLs: Set<String> = [
+        "https://github.com/mfyameen/MapMyFriends",
+    ]
+
     /// Returns all `.swift` files under the main app target (excluding tests).
     private static func appSourceFiles() throws -> [URL] {
         let projectRoot = URL(fileURLWithPath: #filePath)
@@ -71,8 +77,14 @@ struct NoDataExfiltrationTests {
                 // Skip comment lines
                 if trimmed.hasPrefix("//") || trimmed.hasPrefix("*") || trimmed.hasPrefix("/*") { continue }
 
+                // Strip allowlisted links; any other URL on the same line is still caught.
+                var scanned = line
+                for url in NoDataExfiltrationTests.allowedURLs {
+                    scanned = scanned.replacingOccurrences(of: "\"\(url)\"", with: "\"\"")
+                }
+
                 for (label, pattern) in NoDataExfiltrationTests.forbiddenPatterns {
-                    if line.contains(pattern) {
+                    if scanned.contains(pattern) {
                         violations.append("\(fileName):\(lineNum + 1): \(label) (\"\(pattern)\")")
                     }
                 }

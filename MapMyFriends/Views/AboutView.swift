@@ -72,12 +72,12 @@ struct AboutView: View {
             Text("About the app")
                 .font(.headline)
 
-            Text("Map My Friends shows your friends, family, and colleagues nearby and around the world. Your contacts addesses (not real-time location) are pinned on the map - making it easy to see who's near you whethere you're traveling for work or exploring a new neighbourhood.")
+            Text("Map My Friends shows your friends, family, and colleagues nearby and around the world. Your contacts' addresses (not their real-time location) are pinned on the map — making it easy to see who's near you, whether you're traveling for work or exploring a new neighborhood.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
 
-            Text("All data is stored locally and never uploaded anywhere — and it's built entirely with Apple frameworks, with no third-party dependencies. The code is completely open-source and available on GitHub.")
+            Text("Your contacts never leave your device except for their addresses, which are sent only to Apple Maps to find their location. Results are cached on your device, and nothing is sent to us or any third party. The app is built entirely with Apple frameworks, and the code is open-source on GitHub.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
@@ -103,6 +103,10 @@ struct AboutView: View {
             }
 
             Text("Entirely open-source. Built with a little help from AI.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Text("© 2026 Rosedale Co")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 

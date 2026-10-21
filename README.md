@@ -20,7 +20,7 @@ Code available at https://github.com/mfyameen/MapMyFriends
 - **Rate-limit backoff** — When Apple throttles geocoding, the same address is retried with exponential backoff instead of being dropped, so a first launch with hundreds of contacts maps all of them
 - **Expired entries stay visible** — A cache entry past its 90-day TTL still shows its pin immediately while a fresh geocode refreshes it in the background
 - **Run summary** — Every geocoding pass logs a breakdown (from cache / geocoded / failed / retried) in DEBUG, even when progress toasts are hidden
-- **Contact photo pins** — Contacts with a photo appear as their circular photo in a white ring; everyone else gets the blue person marker. Both kinds cluster together
+- **Contact photo pins** — Contacts with a photo appear as their circular photo in a white ring, with their name underneath like the blue markers; everyone else gets the blue person marker. Both kinds cluster together
 - **Pin clustering** — MapKit's native clustering groups nearby pins; tapping a cluster zooms in to reveal members
 - **Same-location clusters** — When contacts share an address, or the map is already zoomed all the way in, tapping the cluster lists every member instead of zooming further
 - **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter
@@ -117,7 +117,7 @@ MapMyFriends/
 
 ## Tests
 
-The project includes 164 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
+The project includes 171 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
 
 ```
 MapMyFriendsTests/
@@ -143,7 +143,7 @@ MapMyFriendsTests/
 ├── AnnotationViewTests.swift            # Pin styling, reuse safety, cluster view layout
 ├── FeatureFlagsTests.swift              # UserDefaults-backed flag reads, overrides
 ├── MissingPinTests.swift                # Every known way a contact could fail to reach the map
-├── PhotoPinTests.swift                  # Photo pin choice, rendering (pixel-checked), reuse, live photo changes
+├── PhotoPinTests.swift                  # Photo pin choice, rendering (pixel-checked), name label, reuse, live photo changes
 └── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 

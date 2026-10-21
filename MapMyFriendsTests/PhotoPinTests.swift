@@ -212,3 +212,76 @@ struct PhotoChangeSyncTests {
         #expect(result.toAdd.isEmpty)
     }
 }
+
+// MARK: - Name label
+
+/// Blue markers print the contact's name under the pin; photo pins must too.
+struct PhotoPinNameLabelTests {
+
+    private func makeView(name: String, id: String = "1") -> ContactPhotoAnnotationView {
+        let view = ContactPhotoAnnotationView(annotation: nil, reuseIdentifier: ContactPhotoAnnotationView.reuseIdentifier)
+        view.annotation = ContactAnnotation(mappedContact: MappedContact(
+            contactID: id,
+            fullName: name,
+            addressLabel: "Home",
+            addressString: "1 Test St",
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            thumbnailImageData: photoData(.red),
+            phoneNumber: nil
+        ))
+        view.layoutIfNeeded()
+        return view
+    }
+
+    @Test func showsTheContactsName() {
+        let view = makeView(name: "Jane Doe")
+
+        #expect(view.nameLabel.text == "Jane Doe")
+        #expect(view.nameLabel.superview === view, "The label must be on screen, not just configured")
+        #expect(!view.nameLabel.isHidden)
+    }
+
+    @Test func sitsBelowThePin() {
+        let view = makeView(name: "Jane Doe")
+
+        #expect(view.nameLabel.frame.minY >= view.bounds.maxY, "The label must not cover the photo")
+        #expect(view.nameLabel.frame.minY - view.bounds.maxY < 8, "…but should stay close to it")
+    }
+
+    @Test func isCenteredUnderThePin() {
+        let view = makeView(name: "Jane Doe")
+
+        #expect(abs(view.nameLabel.frame.midX - view.bounds.midX) < 0.5)
+    }
+
+    @Test func hasRoomForTheName() {
+        let view = makeView(name: "Jane Doe")
+
+        #expect(view.nameLabel.frame.width > 0 && view.nameLabel.frame.height > 0)
+    }
+
+    @Test func longNamesStayNarrow() {
+        let view = makeView(name: "Bartholomew Maximilian Featherstonehaugh-Cholmondeley")
+
+        #expect(view.nameLabel.frame.width <= ContactPhotoAnnotationView.nameLabelMaxWidth)
+    }
+
+    @Test func reusedViewShowsTheNewName() {
+        let view = makeView(name: "Jane Doe")
+        view.prepareForReuse()
+        view.annotation = makeView(name: "John Roe", id: "2").annotation
+
+        #expect(view.nameLabel.text == "John Roe")
+    }
+
+    @Test func hidesWhileTheCalloutIsOpen() {
+        // The callout already shows the name; the marker hides its title the same way.
+        let view = makeView(name: "Jane Doe")
+
+        view.setSelected(true, animated: false)
+        #expect(view.nameLabel.isHidden)
+
+        view.setSelected(false, animated: false)
+        #expect(!view.nameLabel.isHidden)
+    }
+}

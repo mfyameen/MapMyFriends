@@ -1,7 +1,7 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 164 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
+The project has 171 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
@@ -151,6 +151,7 @@ Written as failing tests before the photo pin existed. Rendering is checked by r
 - **Rendering**: the photo's colour is at the centre of the pin (not white); the square photo's corners are clipped away; there's a pointer below the circle; a pin with no photo still draws a placeholder
 - **The view**: shows the photo; clusters with blue markers (same clustering identifier); same callout and info button; `centerOffset` puts the pointer tip on the coordinate; a reused view shows the new contact's photo
 - **Live updates**: a changed or newly added photo replaces the pin; an unchanged photo leaves it alone
+- **Name label**: shows the contact's name, on screen, just below and centred under the pin; long names stay within the max width; a reused view shows the new name; hidden while the callout is open
 
 ## Integration Tests
 

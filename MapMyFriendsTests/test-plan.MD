@@ -1,18 +1,19 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 119 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline and synchronously — no test contacts Apple's geocoding service. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
+The project has 149 tests (148 run, 1 disabled) in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
 
 - `CacheManager`: Conforms to the `CacheManaging` protocol and accepts `init(fileURL:ttl:failedTtl:)` so tests use isolated temp files and short TTLs instead of the real documents directory. The `shared` singleton is used in production.
-- `GeocodingManager`: Accepts `CacheManaging`, `AddressGeocoding`, and `requestDelay` via init (all defaulted for production). Tests inject `MockCacheManager` + `MockGeocoder` with `requestDelay: 0`.
-- `AddressGeocoding`: Protocol seam over MapKit geocoding. `MapKitGeocoder` wraps `MKGeocodingRequest` in production; `MockGeocoder` returns scripted `GeocodeOutcome` values (success / invalidAddress / failed) synchronously in tests. Without this seam every cache miss would hit the live network.
+- `GeocodingManager`: Accepts `CacheManaging`, `AddressGeocoding`, `requestDelay`, and `rateLimitBackoff` via init (all defaulted for production). Tests inject `MockCacheManager` + `MockGeocoder` with both delays at 0.
+- `AddressGeocoding`: Protocol seam over MapKit geocoding. `MapKitGeocoder` wraps `MKGeocodingRequest` in production; `MockGeocoder` returns `GeocodeOutcome` values (success / invalidAddress / failed / rateLimited) synchronously in tests; `ScriptedGeocoder` plays back a sequence per address (e.g. throttled twice, then success); `ManualGeocoder` holds every callback until the test releases it, modelling late responses after a cancel. `MapKitGeocoder.outcome(coordinate:error:)` is a pure function, so the MapKit-to-outcome mapping is tested too. Without this seam every cache miss would hit the live network.
 - `ContactChangeCoalescer`: The `CNContactStoreDidChange` initial-load gate, extracted from `MapViewController` so it can be unit tested without UIKit. The 1-second debounce timer itself stays in the controller and is covered by the manual checklist.
 - `GeocodingRunner` (`Support/`): Shared harness that runs one `process()` call and captures resolved contacts, progress events, the summary, and the completion count.
 - `ContactFixtures` (`Fixtures/`): Loads `contacts-1000.json` from disk via `#filePath` and builds pre-seeded caches and geocoders from it.
-- `ContactsManager`: No mock needed — contact fetching requires a real `CNContactStore` and is impractical to unit test.
+- `ContactsManager`: The per-contact logic (`rawAddresses(from:formatter:)`) and the enumeration loop (`collectAddresses(using:)`, which takes an injectable enumerator) are static, so tests feed in `CNMutableContact`s and throwing enumerators without touching the real store.
+- `ClusterTapResolver`: The zoom-or-list decision for cluster taps, extracted from `MapViewController`.
 - `MapViewController`: No mock needed — it's a coordinator best covered by the manual testing checklist.
 
 ## Unit Tests
@@ -132,9 +133,21 @@ Drives the full 1000-contact fixture through the pipeline (16 test cases). These
 - **Diffing at scale**: 100 deletions and 100 additions computed correctly
 - **Persistence at scale**: 1000 entries survive a disk round trip
 
+### 12. Missing Pin Tests (`MissingPinTests.swift`)
+Every scenario where a contact with an address could fail to reach the map, vanish from it, or show stale details. Each was written as a failing test before the fix.
+- **Reading contacts**: company-only, nickname-only and nameless contacts are mapped; fetch keys cover every field read (an unfetched key crashes); an enumeration that throws part-way returns `.failed`, not a partial list; an empty store is `.success([])`
+- **MapKit responses**: `MKError.loadingThrottled` maps to `.rateLimited`; invalid and NaN coordinates are never a success
+- **Rate limiting**: a throttled address is retried in the same run; persistent throttling gives up after a bounded number of retries and caches nothing
+- **Bad coordinates**: a NaN geocode result is neither plotted nor cached
+- **Cancel and restart**: a late response from a cancelled run is ignored (no resurrected contacts, no extra walk, one completion); a delayed step from a cancelled run does not resume
+- **Expired cache entries**: shown immediately, kept when the refresh fails, refreshed without a duplicate pin
+- **Cache durability**: a NaN entry doesn't stop other entries saving; an unreadable cache file is not overwritten and is read once it becomes available
+- **Live contact sync**: a renamed, relabeled, or renumbered contact replaces its pin; an unchanged one is left alone
+- **Cluster taps**: >10 contacts at one address are listed; neighbours are listed at max zoom; zoom still happens when it would separate pins
+
 ## Integration Tests
 
-### 12. Cache Persistence Integration (`CacheIntegrationTests.swift`)
+### 13. Cache Persistence Integration (`CacheIntegrationTests.swift`)
 End-to-end test using a real temp file (no mocks).
 - **Write → kill → read**: Create a CacheManager with a temp file, store entries, save, deallocate, create a new instance from the same file, verify all entries are present
 - **Concurrent reads**: Store entries, save, read from multiple threads — verify no crashes (smoke test)
@@ -148,13 +161,12 @@ python3 MapMyFriendsTests/Fixtures/generate_contacts_fixture.py
 ```
 
 ## What's NOT Tested (and why)
-- **ContactsManager**: Requires a real `CNContactStore` with contacts permission. Impractical in CI.
-- **MapViewController**: UIKit lifecycle coordination. Best covered by the manual testing checklist in `plan.MD`. The initial-load gate it delegates to (`ContactChangeCoalescer`) *is* unit tested; the 1-second debounce timer is not.
+- **ContactsManager permission prompt and real store**: `requestAccess` and `CNContactStore.enumerateContacts` need a real store with contacts permission. Everything they feed into is tested through the static seams above.
+- **MapViewController**: UIKit lifecycle coordination. Best covered by the manual testing checklist in `plan.MD`. The initial-load gate (`ContactChangeCoalescer`) and cluster-tap decision (`ClusterTapResolver`) it delegates to *are* unit tested; the 1-second debounce timer, the foreground retry, and how it reacts to `.denied` / `.failed` fetches are not.
 - **MKGeocodingRequest networking**: We don't test Apple's geocoding service. `MapKitGeocoder` is the thin, untested adapter around it; everything above the `AddressGeocoding` seam is fully covered.
 
-## Known Failing Tests (pre-existing, out of scope)
-- `NoDataExfiltrationTests/noForbiddenNetworkPatterns` — the scanner flags the legitimate GitHub link at `MapMyFriends/Views/AboutView.swift:109`. Needs a policy decision: allowlist the line or move the URL out of source.
-- `ContactAnnotationViewTests/validAvatarSwitchesMarkerToGray` — relates to the disabled contact-avatar feature.
+## Disabled Tests
+- `ContactAnnotationViewTests/validAvatarSwitchesMarkerToGray` — relates to the disabled contact-avatar feature. Re-enable with the feature.
 
 ## File Structure
 ```
@@ -164,6 +176,7 @@ MapMyFriendsTests/
 │   ├── generate_contacts_fixture.py
 │   └── ContactFixtures.swift
 ├── Mocks/
+│   ├── ManualGeocoder.swift
 │   ├── MockCacheManager.swift
 │   └── MockGeocoder.swift
 ├── Support/
@@ -179,5 +192,6 @@ MapMyFriendsTests/
 ├── GeocodingManagerTests.swift
 ├── AnnotationViewTests.swift
 ├── FeatureFlagsTests.swift
+├── MissingPinTests.swift
 └── NoDataExfiltrationTests.swift
 ```

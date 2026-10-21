@@ -29,6 +29,9 @@ class MapViewController: UIViewController {
     /// Gates contact store changes until the initial geocoding pass has finished.
     private let contactChangeCoalescer = ContactChangeCoalescer()
     private var contactChangeDebounceWorkItem: DispatchWorkItem?
+    /// Some contact addresses aren't on the map because a fetch or geocode failed this
+    /// session. They're retried the next time the app comes to the foreground.
+    private var hasUnmappedAddresses = false
 
     // MARK: - Lifecycle
 
@@ -114,6 +117,19 @@ class MapViewController: UIViewController {
             name: .CNContactStoreDidChange,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+    }
+
+    /// Failed geocodes otherwise wait for a relaunch or a contact edit. A refresh diffs them
+    /// back in (they have no pin), and successful ones are cached so this is cheap.
+    @objc private func appWillEnterForeground(_ notification: Notification) {
+        guard hasUnmappedAddresses else { return }
+        contactStoreDidChange(notification)
     }
 
     @objc private func contactStoreDidChange(_ notification: Notification) {
@@ -151,15 +167,19 @@ class MapViewController: UIViewController {
     // MARK: - Contacts & Geocoding
 
     private func loadContacts() {
-        contactsManager.requestAccessAndFetch { [weak self] rawAddresses in
+        contactsManager.requestAccessAndFetch { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if rawAddresses.isEmpty {
+                guard case .success(let rawAddresses) = result, !rawAddresses.isEmpty else {
+                    if case .denied = result {
+                        self.showContactsAccessDeniedAlert()
+                    } else if case .failed = result {
+                        self.hasUnmappedAddresses = true
+                    }
                     // No geocoding will run, so unblock refreshes explicitly.
                     if self.contactChangeCoalescer.noteInitialLoadComplete() {
                         self.scheduleContactRefresh()
                     }
-                    self.showContactsAccessDeniedAlert()
                     return
                 }
                 self.geocodingManager.process(
@@ -174,22 +194,24 @@ class MapViewController: UIViewController {
         isRefreshing = true
         geocodingManager.cancel()
 
-        contactsManager.requestAccessAndFetch { [weak self] rawAddresses in
+        contactsManager.requestAccessAndFetch { [weak self] result in
             guard let self else { return }
-            self.diffAndUpdate(newAddresses: rawAddresses)
+            switch result {
+            case .success(let rawAddresses):
+                self.diffAndUpdate(newAddresses: rawAddresses)
+            case .denied, .failed:
+                // Not knowing what's in the store is not the same as it being empty:
+                // leave every pin alone and try again later.
+                self.hasUnmappedAddresses = true
+            }
             self.isRefreshing = false
         }
     }
 
+    /// - Parameter newAddresses: A complete, successful fetch. Revoked access and failed
+    ///   enumerations never get here, so an empty list really means no contact has an address.
     private func diffAndUpdate(newAddresses: [ContactsManager.RawContactAddress]) {
-        // An empty fetch means access was revoked or enumeration failed — not that every
-        // contact was deleted. Diffing against it would remove every pin on the map.
-        guard !newAddresses.isEmpty else {
-            #if DEBUG
-            print("[MapViewController] Contact fetch returned no addresses; keeping existing pins")
-            #endif
-            return
-        }
+        hasUnmappedAddresses = false
 
         let existingAnnotations = mapView.annotations.compactMap { $0 as? ContactAnnotation }
         let existingContacts = existingAnnotations.map { $0.mappedContact }
@@ -224,6 +246,9 @@ class MapViewController: UIViewController {
 
         geocodingManager.onComplete = { [weak self] failedCount in
             guard let self else { return }
+            if failedCount > 0 {
+                self.hasUnmappedAddresses = true
+            }
             self.hideProgressBanner()
             self.centerOnAnnotationsIfNeeded()
             if failedCount > 0, !FeatureFlags.hideGeocodingToasts {
@@ -405,27 +430,29 @@ extension MapViewController: MKMapViewDelegate {
         guard let cluster = view.annotation as? MKClusterAnnotation else { return }
 
         let members = cluster.memberAnnotations
+        let action = ClusterTapResolver.action(
+            members: members.map(\.coordinate),
+            clusterCoordinate: cluster.coordinate,
+            visibleSpan: mapView.region.span.latitudeDelta
+        )
 
-        // Check if all members are at essentially the same point (can't be expanded by zooming)
-        let allSameLocation = members.allSatisfy { member in
-            let latDiff = abs(member.coordinate.latitude - cluster.coordinate.latitude)
-            let lngDiff = abs(member.coordinate.longitude - cluster.coordinate.longitude)
-            return latDiff < 0.0001 && lngDiff < 0.0001
-        }
-
-        if allSameLocation, members.count <= 10 {
-            // Show a list of contacts at this location since zooming won't help
+        switch action {
+        case .showList:
+            // Zooming won't separate these pins, so list them instead
             mapView.deselectAnnotation(cluster, animated: false)
             let sheet = UIAlertController(
-                title: "\(members.count) contacts at this location",
+                title: "\(members.count) contacts here",
                 message: nil,
                 preferredStyle: .actionSheet
             )
             for member in members {
                 if let contact = (member as? ContactAnnotation)?.mappedContact {
                     sheet.addAction(UIAlertAction(title: contact.fullName, style: .default) { [weak self] _ in
+                        // Same behavior as tapping a single pin's info button.
                         if FeatureFlags.openContactOnPinTap {
                             self?.openInContacts(contactID: contact.contactID)
+                        } else {
+                            self?.showCallMessageSheet(for: contact, from: view)
                         }
                     })
                 }
@@ -436,18 +463,11 @@ extension MapViewController: MKMapViewDelegate {
                 popover.sourceRect = view.bounds
             }
             present(sheet, animated: true)
-            return
-        }
 
-        // Compute bounding rect of all members and zoom in with padding
-        let rect = members.reduce(MKMapRect.null) { rect, member in
-            let point = MKMapPoint(member.coordinate)
-            let memberRect = MKMapRect(x: point.x - 100, y: point.y - 100, width: 200, height: 200)
-            return rect.union(memberRect)
+        case .zoom(let rect):
+            let padding = UIEdgeInsets(top: 60, left: 40, bottom: 60, right: 40)
+            mapView.setVisibleMapRect(rect, edgePadding: padding, animated: true)
         }
-
-        let padding = UIEdgeInsets(top: 60, left: 40, bottom: 60, right: 40)
-        mapView.setVisibleMapRect(rect, edgePadding: padding, animated: true)
 
         // Deselect so user can tap the same cluster again after it re-forms
         mapView.deselectAnnotation(cluster, animated: false)
@@ -484,7 +504,7 @@ extension MapViewController: MKMapViewDelegate {
         }
     }
 
-    private func showCallMessageSheet(for contact: MappedContact, from control: UIControl) {
+    private func showCallMessageSheet(for contact: MappedContact, from sourceView: UIView) {
         guard let phone = contact.phoneNumber, !phone.isEmpty else {
             let alert = UIAlertController(
                 title: contact.fullName,
@@ -515,8 +535,8 @@ extension MapViewController: MKMapViewDelegate {
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
 
         if let popover = sheet.popoverPresentationController {
-            popover.sourceView = control
-            popover.sourceRect = control.bounds
+            popover.sourceView = sourceView
+            popover.sourceRect = sourceView.bounds
         }
 
         present(sheet, animated: true)

@@ -16,10 +16,12 @@ Code available at https://github.com/mfyameen/MapMyFriends
 
 - **Contact mapping** — Automatically reads contacts with postal addresses and plots them on a map
 - **Smart caching** — Successful geocodes are persisted to a local JSON file with a 90-day TTL; subsequent launches load instantly
-- **Failures are never cached** — A transient network error, rate limit, or unparseable address is retried on the next launch instead of hiding the contact
+- **Failures are never cached** — A transient network error, rate limit, or unparseable address is retried when the app next returns to the foreground (or relaunches) instead of hiding the contact
+- **Rate-limit backoff** — When Apple throttles geocoding, the same address is retried with exponential backoff instead of being dropped, so a first launch with hundreds of contacts maps all of them
+- **Expired entries stay visible** — A cache entry past its 90-day TTL still shows its pin immediately while a fresh geocode refreshes it in the background
 - **Run summary** — Every geocoding pass logs a breakdown (from cache / geocoded / failed / retried) in DEBUG, even when progress toasts are hidden
 - **Pin clustering** — MapKit's native clustering groups nearby pins; tapping a cluster zooms in to reveal members
-- **Same-location clusters** — When contacts share an address, tapping the cluster shows a list instead of zooming further
+- **Same-location clusters** — When contacts share an address, or the map is already zoomed all the way in, tapping the cluster lists every member instead of zooming further
 - **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter
 - **Proximity sorting** — Cached contacts are delivered nearest-first so nearby pins appear on the map before distant ones
 - **Callout actions** — Tap any pin to open the contact in the Contacts app, or (via Settings) show Call/Message options
@@ -58,6 +60,7 @@ MapMyFriends/
 ├── Managers/
 │   ├── AddressGeocoding.swift       # Geocoding protocol seam + MapKitGeocoder implementation
 │   ├── CacheManager.swift           # Thread-safe JSON cache with 90-day TTL
+│   ├── ClusterTapResolver.swift     # Decides whether a cluster tap zooms or lists its members
 │   ├── ContactChangeCoalescer.swift # Gates/coalesces CNContactStoreDidChange notifications
 │   ├── ContactsManager.swift        # Contacts permission & fetch (incl. thumbnails & phone numbers)
 │   ├── ContactDiffer.swift          # Pure-function diff for live contact sync
@@ -85,10 +88,14 @@ MapMyFriends/
 - **Injectable geocoder** — `GeocodingManager` talks to an `AddressGeocoding` protocol (`MapKitGeocoder` in production, a mock in tests), so the whole pipeline can be exercised deterministically with no network access.
 - **Single cache lookup** — `GeocodingManager` resolves contacts directly from the first cache lookup, eliminating a previous double-lookup race condition.
 - **Incremental persistence** — Cache saves to disk every 10 geocodes during sequential processing, protecting partial progress.
-- **Sequential geocoding with delay** — Addresses are geocoded one at a time with a 0.15s delay to stay under Apple's rate limit. The walk is a loop rather than per-address recursion, so a synchronous geocoder can't build a deep stack.
+- **Sequential geocoding with delay** — Addresses are geocoded one at a time with a 0.15s delay. When Apple still throttles (`MKError.loadingThrottled`), the same address is retried up to 4 times with exponential backoff (5s, 10s, 20s, 40s) before it is reported as failed for this run. The walk is a loop rather than per-address recursion, so a synchronous geocoder can't build a deep stack.
+- **Runs are versioned** — Every `process()`/`cancel()` bumps a run ID. A geocode response or delayed step from a cancelled run is dropped, so a contact refresh can't resurrect deleted contacts, duplicate pins, or report completion twice.
+- **Only plottable coordinates** — A NaN or out-of-range coordinate is treated as a failed geocode, and the cache refuses NaN (which would make the whole JSON file unencodable).
+- **Unreadable cache is never clobbered** — If the cache file exists but can't be read (e.g. still locked by Data Protection), lookups retry the read and saves are skipped until it succeeds, so one bad launch can't wipe every cached location.
 - **Deferred initial load** — Granting contacts permission fires `CNContactStoreDidChange` mid-geocode. `ContactChangeCoalescer` defers changes until the first pass completes, then collapses them into a single refresh, so the initial run is never cancelled part-way.
-- **Empty fetch is not a deletion** — A contact fetch returning nothing (revoked access, enumeration failure) leaves existing pins alone rather than diffing every one of them off the map.
-- **Contact diffing** — `ContactDiffer` computes a minimal diff (using `contactID + addressString` as identity) to add/remove only changed pins.
+- **Failed fetch is not a deletion** — `ContactsManager` returns `.success`, `.denied`, or `.failed`. Only a complete, successful fetch is diffed; a denied or interrupted fetch leaves every pin alone, and a partial list is never passed off as the whole store.
+- **Every contact with an address gets a pin** — Names fall back from given + family name to company name, then nickname, then "No Name", so business and nickname-only contacts aren't silently skipped.
+- **Contact diffing** — `ContactDiffer` computes a minimal diff to add/remove only changed pins. Identity covers everything a pin displays (contact ID, address, name, label, phone), so renaming a contact or changing their number updates the pin.
 - **Reuse-safe annotation views** — `ContactAnnotationView` re-applies styling in `init`, `prepareForReuse`, and `annotation didSet` to prevent red pin artifacts during cluster transitions.
 - **Feature flags via Settings.bundle** — User-facing toggles backed by `UserDefaults` for pin tap behavior and progress display.
 
@@ -96,17 +103,18 @@ MapMyFriends/
 
 1. **Launch** → `MapMyFriendsApp` registers feature flag defaults; `MapViewController` requests contacts permission and subscribes to `CNContactStoreDidChange`
 2. **Fetch** → `ContactsManager` enumerates all contacts with postal addresses, thumbnails, and phone numbers on a background thread
-3. **Cache check** → `GeocodingManager` classifies each address in a single lookup: valid cache hit (resolve immediately) or cache miss (geocode). Legacy `failed: true` entries count as misses so they are retried
+3. **Cache check** → `GeocodingManager` classifies each address in a single lookup: valid cache hit (resolve immediately), expired hit (resolve immediately at the old coordinate, then refresh), or cache miss (geocode). Legacy `failed: true` entries count as misses so they are retried
 4. **Sort** → Cache hits are sorted by proximity to user location so nearby pins appear first
-5. **Geocode** → Cache misses are geocoded sequentially via `MKGeocodingRequest` with 0.15s delays; failures are reported but never written to the cache
+5. **Geocode** → Cache misses are geocoded sequentially via `MKGeocodingRequest` with 0.15s delays, backing off and retrying when throttled; expired entries are refreshed after all misses; failures are reported but never written to the cache
 6. **Plot** → Each resolved contact is added to the map as a `ContactAnnotation`; clusters auto-zoom on tap
 7. **Persist** → Cache saves incrementally every 10 geocodes, plus a final save on completion
 8. **Report** → `onSummary` and a DEBUG log record how many contacts came from cache, were geocoded, failed, or were retried after a legacy failure
 9. **Live sync** → Contact changes are deferred during the initial load, then debounced; `ContactDiffer` computes a minimal diff and only adds/removes affected pins
+10. **Retry** → If any address failed to map, returning to the foreground triggers the same diff, which re-geocodes exactly the addresses that have no pin
 
 ## Tests
 
-The project includes 119 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
+The project includes 149 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
 
 ```
 MapMyFriendsTests/
@@ -115,6 +123,7 @@ MapMyFriendsTests/
 │   ├── generate_contacts_fixture.py     # Regenerates the fixture deterministically
 │   └── ContactFixtures.swift            # Loader + cache/geocoder helpers
 ├── Mocks/
+│   ├── ManualGeocoder.swift             # Async (test-controlled) and scripted geocoders
 │   ├── MockCacheManager.swift           # In-memory CacheManaging with seeding helpers
 │   └── MockGeocoder.swift               # Deterministic, synchronous AddressGeocoding
 ├── Support/
@@ -130,6 +139,7 @@ MapMyFriendsTests/
 ├── GeocodingManagerTests.swift          # Cache hits, retries, proximity sort, metadata
 ├── AnnotationViewTests.swift            # Pin styling, reuse safety, cluster view layout
 ├── FeatureFlagsTests.swift              # UserDefaults-backed flag reads, overrides
+├── MissingPinTests.swift                # Every known way a contact could fail to reach the map
 └── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 
@@ -159,7 +169,7 @@ User-configurable options are available in **iOS Settings → Map My Friends**:
 - [x] Open in Contacts — push `CNContactViewController` from pin tap (feature-flagged)
 - [x] About page — app info and GitHub link
 - [x] Feature flags — Settings.bundle with user-facing toggles
-- [x] Cluster zoom — tap cluster to zoom in; same-location clusters show contact list
+- [x] Cluster zoom — tap cluster to zoom in; same-location (or fully zoomed-in) clusters show contact list
 - [ ] Cache invalidation — detect when a cached address no longer matches the contact's current address
 - [ ] Refresh button — nav bar button to manually re-fetch and re-geocode
 - [ ] Address type color coding — different pin colors for Home vs Work vs Other

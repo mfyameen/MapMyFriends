@@ -15,9 +15,8 @@ struct FeatureFlagsTests {
     // MARK: - Register Defaults
 
     @Test func registerDefaultsSetsExpectedValues() {
-        // Fresh suite — keys don't exist yet, so bool(forKey:) returns false
-        #expect(testDefaults.bool(forKey: "open_contact_on_pin_tap") == false)
-
+        // No "starts out false" check: register(defaults:) writes to the process-wide
+        // registration domain, so other tests running in parallel can already have set it.
         testDefaults.register(defaults: [
             "open_contact_on_pin_tap": true,
             "hide_geocoding_toasts": true,

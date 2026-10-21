@@ -176,7 +176,7 @@ struct ContactPlottingTests {
 
     // MARK: - 5. TTL Expiry
 
-    @Test func staleSuccessIsReGeocoded() {
+    @Test func staleSuccessShowsImmediatelyAndIsRefreshed() {
         let cache = CacheManager(fileURL: makeTempFileURL(), ttl: 1, failedTtl: 1)
         let staleDate = Date(timeIntervalSinceNow: -10) // TTL is 1s
         cache.store(coordinate: CachedCoordinate(lat: 37.0, lng: -122.0, cachedAt: staleDate), for: "addr")
@@ -189,9 +189,12 @@ struct ContactPlottingTests {
             addresses: [makeAddress(address: "addr")]
         )
 
-        #expect(result.summary?.resolvedFromCache == 0, "Stale entry must not resolve from cache")
-        #expect(result.summary?.geocoded == 1, "Stale entry should be re-geocoded")
-        #expect(result.resolved.first?.coordinate.latitude == 1.0, "Fresh coordinate should win")
+        #expect(result.summary?.resolvedFromCache == 0, "Stale entry is not a fresh cache hit")
+        #expect(result.summary?.resolvedFromExpiredCache == 1, "Stale entry still shows a pin right away")
+        #expect(result.summary?.refreshedExpired == 1, "Stale entry should be re-geocoded")
+        #expect(result.resolved.count == 1, "No duplicate pin once the refresh lands")
+        #expect(result.resolved.first?.coordinate.latitude == 37.0, "Pin uses the last known location")
+        #expect(cache.coordinate(for: "addr")?.lat == 1.0, "Fresh coordinate is cached for next launch")
     }
 
     @Test func expiredLegacyFailedEntryReturnsNil() {

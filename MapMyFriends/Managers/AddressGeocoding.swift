@@ -12,8 +12,10 @@ enum GeocodeOutcome {
     /// The address string could not be turned into a geocoding request. No network call was
     /// made, so this is free to retry on the next launch and must never be cached as a failure.
     case invalidAddress
-    /// A geocode was attempted but returned no usable result (network error, rate limit, no match).
+    /// A geocode was attempted but returned no usable result (network error, no match).
     case failed(reason: String?)
+    /// Apple throttled the request. The address itself is fine and should be retried.
+    case rateLimited
 }
 
 /// Seam over MapKit geocoding so the contact-plotting pipeline can be exercised
@@ -40,16 +42,34 @@ final class MapKitGeocoder: AddressGeocoding {
         currentRequest = request
 
         request.getMapItems { mapItems, error in
-            if let coordinate = mapItems?.first?.location.coordinate {
-                completion(.success(coordinate))
-            } else {
-                completion(.failed(reason: error?.localizedDescription))
-            }
+            completion(Self.outcome(coordinate: mapItems?.first?.location.coordinate, error: error))
         }
+    }
+
+    /// Maps a MapKit geocoding response onto a `GeocodeOutcome`.
+    nonisolated static func outcome(coordinate: CLLocationCoordinate2D?, error: Error?) -> GeocodeOutcome {
+        if let coordinate {
+            guard coordinate.isPlottable else {
+                return .failed(reason: "invalid coordinate")
+            }
+            return .success(coordinate)
+        }
+        if let mapKitError = error as? MKError, mapKitError.code == .loadingThrottled {
+            return .rateLimited
+        }
+        return .failed(reason: error?.localizedDescription)
     }
 
     func cancelInFlight() {
         currentRequest?.cancel()
         currentRequest = nil
+    }
+}
+
+extension CLLocationCoordinate2D {
+    /// A real point on Earth: finite and within latitude/longitude bounds. Anything else
+    /// can't be drawn on the map, and NaN can't even be written to the JSON cache.
+    nonisolated var isPlottable: Bool {
+        latitude.isFinite && longitude.isFinite && CLLocationCoordinate2DIsValid(self)
     }
 }

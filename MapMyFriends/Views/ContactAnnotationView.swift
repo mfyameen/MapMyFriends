@@ -8,6 +8,9 @@ import UIKit
 
 class ContactAnnotationView: MKMarkerAnnotationView {
 
+    /// Shared with `ContactPhotoAnnotationView` so photo pins and blue markers cluster together.
+    static let contactClusteringIdentifier = "contact"
+
     override init(annotation: (any MKAnnotation)?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
         applyDefaultStyle()
@@ -30,7 +33,7 @@ class ContactAnnotationView: MKMarkerAnnotationView {
     }
 
     private func applyDefaultStyle() {
-        clusteringIdentifier = "contact"
+        clusteringIdentifier = Self.contactClusteringIdentifier
         markerTintColor = .systemBlue
         glyphImage = UIImage(systemName: "person.fill")
         canShowCallout = true
@@ -38,6 +41,4 @@ class ContactAnnotationView: MKMarkerAnnotationView {
             rightCalloutAccessoryView = UIButton(type: .detailDisclosure)
         }
     }
-
-    // TODO: Fix contact avatar display on pins — currently broken, disabled for now.
 }

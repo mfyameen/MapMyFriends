@@ -49,21 +49,6 @@ struct ContactAnnotationViewTests {
         #expect(view.markerTintColor == .systemBlue)
     }
 
-    @Test(.disabled("Avatar pins are disabled — see TODO in ContactAnnotationView"))
-    func validAvatarSwitchesMarkerToGray() {
-        // Build a 1×1 red PNG as minimal valid image data
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1))
-        let imageData = renderer.pngData { ctx in
-            UIColor.red.setFill()
-            ctx.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
-        }
-        let view = ContactAnnotationView(annotation: nil, reuseIdentifier: nil)
-        let annotation = ContactAnnotation(mappedContact: makeContact(thumbnailImageData: imageData))
-        view.annotation = annotation
-        #expect(view.markerTintColor == .systemGray)
-        #expect(view.glyphImage != nil)
-    }
-
     @Test func invalidAvatarDataFallsBackToDefault() {
         let badData = Data([0x00, 0x01, 0x02]) // not a valid image
         let view = ContactAnnotationView(annotation: nil, reuseIdentifier: nil)

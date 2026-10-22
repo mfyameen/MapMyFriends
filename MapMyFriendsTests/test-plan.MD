@@ -1,7 +1,7 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 171 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
+The project has 181 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
@@ -14,6 +14,7 @@ The following patterns enable isolated, deterministic testing:
 - `ContactFixtures` (`Fixtures/`): Loads `contacts-1000.json` from disk via `#filePath` and builds pre-seeded caches and geocoders from it.
 - `ContactsManager`: The per-contact logic (`rawAddresses(from:formatter:)`) and the enumeration loop (`collectAddresses(using:)`, which takes an injectable enumerator) are static, so tests feed in `CNMutableContact`s and throwing enumerators without touching the real store.
 - `ClusterTapResolver`: The zoom-or-list decision for cluster taps, extracted from `MapViewController`.
+- `ContactPinViews`: View registration and the `viewFor:` choice, extracted from `MapViewController` and tested against a real (offscreen) `MKMapView`.
 - `MapViewController`: No mock needed — it's a coordinator best covered by the manual testing checklist.
 
 ## Unit Tests
@@ -152,10 +153,20 @@ Written as failing tests before the photo pin existed. Rendering is checked by r
 - **The view**: shows the photo; clusters with blue markers (same clustering identifier); same callout and info button; `centerOffset` puts the pointer tip on the coordinate; a reused view shows the new contact's photo
 - **Live updates**: a changed or newly added photo replaces the pin; an unchanged photo leaves it alone
 - **Name label**: shows the contact's name, on screen, just below and centred under the pin; long names stay within the max width; a reused view shows the new name; hidden while the callout is open
+- **Name label appearance**: the halo switches between the light and dark background colours; short names use one line and very long names wrap to at most two; the font grows with Dynamic Type but is capped at 16 pt
+
+### 14. Pin Wiring Tests (`PinWiringTests.swift`)
+Run against a real offscreen `MKMapView` with `ContactPinViews.register(on:)` applied, so a dropped registration or a broken branch in the `viewFor:` choice fails here instead of only on device.
+- Contact with a photo → `ContactPhotoAnnotationView`; without → `ContactAnnotationView`; each bound to the right annotation
+- Single-member cluster → that member's own pin (photo or marker), not a cluster of 1
+- Multi-member cluster → `ClusterAnnotationView`
+- User location → `nil`, so MapKit keeps its blue dot
+
+Each new wiring and appearance test was confirmed to fail first: the wiring tests against a stub, the appearance tests against deliberately broken label code (no halo update, unlimited lines, no font cap).
 
 ## Integration Tests
 
-### 14. Cache Persistence Integration (`CacheIntegrationTests.swift`)
+### 15. Cache Persistence Integration (`CacheIntegrationTests.swift`)
 End-to-end test using a real temp file (no mocks).
 - **Write → kill → read**: Create a CacheManager with a temp file, store entries, save, deallocate, create a new instance from the same file, verify all entries are present
 - **Concurrent reads**: Store entries, save, read from multiple threads — verify no crashes (smoke test)
@@ -170,7 +181,7 @@ python3 MapMyFriendsTests/Fixtures/generate_contacts_fixture.py
 
 ## What's NOT Tested (and why)
 - **ContactsManager permission prompt and real store**: `requestAccess` and `CNContactStore.enumerateContacts` need a real store with contacts permission. Everything they feed into is tested through the static seams above.
-- **MapViewController**: UIKit lifecycle coordination. Best covered by the manual testing checklist in `plan.MD`. The initial-load gate (`ContactChangeCoalescer`) and cluster-tap decision (`ClusterTapResolver`) it delegates to *are* unit tested; the 1-second debounce timer, the foreground retry, and how it reacts to `.denied` / `.failed` fetches are not.
+- **MapViewController**: UIKit lifecycle coordination. Best covered by the manual testing checklist in `plan.MD`. The initial-load gate (`ContactChangeCoalescer`), cluster-tap decision (`ClusterTapResolver`) and pin view wiring (`ContactPinViews`) it delegates to *are* unit tested; the 1-second debounce timer, the foreground retry, and how it reacts to `.denied` / `.failed` fetches are not.
 - **MKGeocodingRequest networking**: We don't test Apple's geocoding service. `MapKitGeocoder` is the thin, untested adapter around it; everything above the `AddressGeocoding` seam is fully covered.
 
 ## File Structure
@@ -199,5 +210,6 @@ MapMyFriendsTests/
 ├── FeatureFlagsTests.swift
 ├── MissingPinTests.swift
 ├── PhotoPinTests.swift
+├── PinWiringTests.swift
 └── NoDataExfiltrationTests.swift
 ```

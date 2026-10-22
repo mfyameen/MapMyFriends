@@ -74,6 +74,7 @@ MapMyFriends/
 │   ├── ContactAnnotation.swift      # MKAnnotation wrapper
 │   ├── ContactAnnotationView.swift  # Blue person pin with reuse-safe styling
 │   ├── ContactPhotoAnnotationView.swift # Circular photo pin for contacts with a photo
+│   ├── ContactPinViews.swift        # Registers the map's views and picks one per annotation
 │   ├── ClusterAnnotationView.swift  # Circle with count badge
 │   └── MapViewControllerWrapper.swift # UIViewControllerRepresentable bridge
 ├── PrivacyInfo.xcprivacy            # Privacy manifest (no tracking, no collected data)
@@ -117,7 +118,7 @@ MapMyFriends/
 
 ## Tests
 
-The project includes 171 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
+The project includes 181 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
 
 ```
 MapMyFriendsTests/
@@ -144,6 +145,7 @@ MapMyFriendsTests/
 ├── FeatureFlagsTests.swift              # UserDefaults-backed flag reads, overrides
 ├── MissingPinTests.swift                # Every known way a contact could fail to reach the map
 ├── PhotoPinTests.swift                  # Photo pin choice, rendering (pixel-checked), name label, reuse, live photo changes
+├── PinWiringTests.swift                 # View registration and per-annotation view choice on a real MKMapView
 └── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 

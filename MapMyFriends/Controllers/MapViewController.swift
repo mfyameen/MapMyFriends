@@ -73,18 +73,7 @@ class MapViewController: UIViewController {
         mapView.delegate = self
         mapView.showsUserLocation = true
 
-        mapView.register(
-            ContactAnnotationView.self,
-            forAnnotationViewWithReuseIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier
-        )
-        mapView.register(
-            ContactPhotoAnnotationView.self,
-            forAnnotationViewWithReuseIdentifier: ContactPhotoAnnotationView.reuseIdentifier
-        )
-        mapView.register(
-            ClusterAnnotationView.self,
-            forAnnotationViewWithReuseIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier
-        )
+        ContactPinViews.register(on: mapView)
 
         let trackingButton = MKUserTrackingButton(mapView: mapView)
         trackingButton.translatesAutoresizingMaskIntoConstraints = false
@@ -400,32 +389,7 @@ class MapViewController: UIViewController {
 extension MapViewController: MKMapViewDelegate {
 
     func mapView(_ mapView: MKMapView, viewFor annotation: any MKAnnotation) -> MKAnnotationView? {
-        if annotation is MKUserLocation { return nil }
-
-        if let cluster = annotation as? MKClusterAnnotation {
-            // Single-member cluster — display as a regular contact pin instead
-            if cluster.memberAnnotations.count == 1,
-               let member = cluster.memberAnnotations.first as? ContactAnnotation {
-                return contactView(for: member, in: mapView)
-            }
-            return mapView.dequeueReusableAnnotationView(
-                withIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier,
-                for: annotation
-            )
-        }
-
-        if let contact = annotation as? ContactAnnotation {
-            return contactView(for: contact, in: mapView)
-        }
-
-        return nil
-    }
-
-    /// The photo pin for contacts with a photo, the blue marker for everyone else.
-    private func contactView(for annotation: ContactAnnotation, in mapView: MKMapView) -> MKAnnotationView {
-        let view = mapView.dequeueReusableAnnotationView(withIdentifier: annotation.pinReuseIdentifier, for: annotation)
-        view.annotation = annotation
-        return view
+        ContactPinViews.view(for: annotation, in: mapView)
     }
 
     func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {

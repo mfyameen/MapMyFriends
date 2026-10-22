@@ -285,3 +285,76 @@ struct PhotoPinNameLabelTests {
         #expect(!view.nameLabel.isHidden)
     }
 }
+
+// MARK: - Name label appearance
+
+struct PhotoPinNameLabelAppearanceTests {
+
+    private func makeView(name: String = "Jane Doe") -> ContactPhotoAnnotationView {
+        let view = ContactPhotoAnnotationView(annotation: nil, reuseIdentifier: ContactPhotoAnnotationView.reuseIdentifier)
+        view.annotation = ContactAnnotation(mappedContact: MappedContact(
+            contactID: "1",
+            fullName: name,
+            addressLabel: "Home",
+            addressString: "1 Test St",
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            thumbnailImageData: photoData(.red),
+            phoneNumber: nil
+        ))
+        view.layoutIfNeeded()
+        return view
+    }
+
+    private func haloColor(of view: ContactPhotoAnnotationView) -> UIColor? {
+        view.nameLabel.layer.shadowColor.map(UIColor.init(cgColor:))
+    }
+
+    private func background(_ style: UIUserInterfaceStyle) -> UIColor {
+        UIColor.systemBackground.resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
+    }
+
+    @Test func haloFollowsLightAndDarkMode() {
+        // A light halo behind white dark-mode text would make the name unreadable.
+        let view = makeView()
+
+        view.overrideUserInterfaceStyle = .light
+        view.updateTraitsIfNeeded()
+        #expect(haloColor(of: view) == background(.light))
+
+        view.overrideUserInterfaceStyle = .dark
+        view.updateTraitsIfNeeded()
+        #expect(haloColor(of: view) == background(.dark), "Halo didn't switch to the dark background")
+
+        view.overrideUserInterfaceStyle = .light
+        view.updateTraitsIfNeeded()
+        #expect(haloColor(of: view) == background(.light), "Halo didn't switch back")
+    }
+
+    @Test func veryLongNamesWrapToAtMostTwoLines() throws {
+        let view = makeView(name: "Bartholomew Maximilian Featherstonehaugh-Cholmondeley the Third of Little Snoring")
+        let lineHeight = try #require(view.nameLabel.font).lineHeight
+
+        #expect(view.nameLabel.frame.height > lineHeight * 1.5, "A long name should use the second line")
+        #expect(view.nameLabel.frame.height < lineHeight * 2.5, "…but never a third")
+    }
+
+    @Test func shortNamesUseOneLine() throws {
+        let view = makeView(name: "Jo")
+        let lineHeight = try #require(view.nameLabel.font).lineHeight
+
+        #expect(view.nameLabel.frame.height < lineHeight * 1.5)
+    }
+
+    @Test func fontGrowsWithTextSizeButIsCapped() {
+        let view = makeView()
+        let defaultSize = view.nameLabel.font.pointSize
+
+        view.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+        view.updateTraitsIfNeeded()
+        view.nameLabel.updateTraitsIfNeeded()
+        let largestSize = view.nameLabel.font.pointSize
+
+        #expect(largestSize > defaultSize, "The name should follow the user's text size")
+        #expect(largestSize <= 16, "Capped so a name can't swamp the map")
+    }
+}

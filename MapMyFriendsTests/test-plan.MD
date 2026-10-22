@@ -1,7 +1,7 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 181 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
+The project has 194 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service. All but one run synchronously; `pendingStepFromCancelledRunDoesNotResume` waits 250 ms for a real `asyncAfter`. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
@@ -164,9 +164,15 @@ Run against a real offscreen `MKMapView` with `ContactPinViews.register(on:)` ap
 
 Each new wiring and appearance test was confirmed to fail first: the wiring tests against a stub, the appearance tests against deliberately broken label code (no halo update, unlimited lines, no font cap).
 
+### 15. Review Fix Tests (`ReviewFixTests.swift`)
+Bugs from the October 2026 review, each written as a failing test first.
+- **Camera policy**: contacts are framed once; the user location centers once; no contact framing after centering on the user; a late first fix still centers once
+- **Cache location**: the default cache isn't in Documents (it's in Application Support); a saved cache is excluded from backup; a legacy Documents cache is moved, never overwrites a newer cache, and is always removed; migration with nothing to move is harmless
+- **Cache pruning**: `retainOnly` drops addresses no longer in Contacts, in memory and on disk, including expired entries; `GeocodingManager.forgetAddresses(notIn:)` forwards to the cache and saves
+
 ## Integration Tests
 
-### 15. Cache Persistence Integration (`CacheIntegrationTests.swift`)
+### 16. Cache Persistence Integration (`CacheIntegrationTests.swift`)
 End-to-end test using a real temp file (no mocks).
 - **Write → kill → read**: Create a CacheManager with a temp file, store entries, save, deallocate, create a new instance from the same file, verify all entries are present
 - **Concurrent reads**: Store entries, save, read from multiple threads — verify no crashes (smoke test)
@@ -211,5 +217,6 @@ MapMyFriendsTests/
 ├── MissingPinTests.swift
 ├── PhotoPinTests.swift
 ├── PinWiringTests.swift
+├── ReviewFixTests.swift
 └── NoDataExfiltrationTests.swift
 ```

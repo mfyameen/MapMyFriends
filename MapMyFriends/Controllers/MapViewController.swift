@@ -24,7 +24,8 @@ class MapViewController: UIViewController {
 
     private var progressBanner: UIView?
     private var progressLabel: UILabel?
-    private var didCenterOnUser = false
+    /// Lets the map move on its own only for the launch view.
+    private var camera = InitialCameraPolicy()
     private var isRefreshing = false
     /// Gates contact store changes until the initial geocoding pass has finished.
     private let contactChangeCoalescer = ContactChangeCoalescer()
@@ -163,6 +164,9 @@ class MapViewController: UIViewController {
         contactsManager.requestAccessAndFetch { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                if case .success(let allAddresses) = result {
+                    self.geocodingManager.forgetAddresses(notIn: allAddresses)
+                }
                 guard case .success(let rawAddresses) = result, !rawAddresses.isEmpty else {
                     if case .denied = result {
                         self.showContactsAccessDeniedAlert()
@@ -191,6 +195,7 @@ class MapViewController: UIViewController {
             guard let self else { return }
             switch result {
             case .success(let rawAddresses):
+                self.geocodingManager.forgetAddresses(notIn: rawAddresses)
                 self.diffAndUpdate(newAddresses: rawAddresses)
             case .denied, .failed:
                 // Not knowing what's in the store is not the same as it being empty:
@@ -318,26 +323,30 @@ class MapViewController: UIViewController {
 
     private func showGeocodingFailureBanner(count: Int) {
         let noun = count == 1 ? "address" : "addresses"
-        let banner = UILabel()
-        banner.text = "\(count) \(noun) could not be mapped"
-        banner.font = .systemFont(ofSize: 13, weight: .medium)
-        banner.textColor = .white
-        banner.textAlignment = .center
+        let label = UILabel()
+        label.text = "\(count) \(noun) could not be mapped"
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        // A UILabel ignores layoutMargins, so the padding comes from a container.
+        let banner = UIView()
         banner.backgroundColor = UIColor.systemOrange
         banner.layer.cornerRadius = 10
-        banner.clipsToBounds = true
         banner.translatesAutoresizingMaskIntoConstraints = false
         banner.alpha = 0
+        banner.addSubview(label)
         view.addSubview(banner)
 
         NSLayoutConstraint.activate([
             banner.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
             banner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             banner.heightAnchor.constraint(equalToConstant: 36),
-            banner.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
+            label.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -16),
+            label.centerYAnchor.constraint(equalTo: banner.centerYAnchor),
         ])
-        // Padding via content insets
-        banner.layoutMargins = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
 
         UIView.animate(withDuration: 0.25) { banner.alpha = 1 }
 
@@ -352,10 +361,8 @@ class MapViewController: UIViewController {
     // MARK: - Map Centering
 
     private func centerOnAnnotationsIfNeeded() {
-        guard !didCenterOnUser else { return }
-
         let annotations = mapView.annotations.filter { !($0 is MKUserLocation) }
-        guard !annotations.isEmpty else { return }
+        guard !annotations.isEmpty, camera.shouldFrameContacts() else { return }
 
         let rect = annotations.reduce(MKMapRect.null) { rect, annotation in
             let point = MKMapPoint(annotation.coordinate)
@@ -514,8 +521,12 @@ extension MapViewController: MKMapViewDelegate {
 extension MapViewController: CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard !didCenterOnUser, let location = locations.first else { return }
-        didCenterOnUser = true
+        guard let location = locations.first else { return }
+        // One fix is all this manager is for: the launch view and sorting nearby contacts
+        // first (via `manager.location`). The map tracks the blue dot on its own, so leaving
+        // GPS running would only drain the battery.
+        manager.stopUpdatingLocation()
+        guard camera.shouldCenterOnUser() else { return }
 
         let region = MKCoordinateRegion(
             center: location.coordinate,

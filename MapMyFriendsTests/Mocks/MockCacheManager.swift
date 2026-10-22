@@ -24,6 +24,11 @@ class MockCacheManager: CacheManaging {
         storage[address] = coordinate
     }
 
+    func retainOnly(_ addresses: Set<String>) {
+        storage = storage.filter { addresses.contains($0.key) }
+        expiredStorage = expiredStorage.filter { addresses.contains($0.key) }
+    }
+
     func saveToDisk() {
         saveToDiskCallCount += 1
     }

@@ -13,6 +13,9 @@ protocol CacheManaging {
     /// the address is while a fresh geocode is pending or failing.
     func expiredCoordinate(for address: String) -> CachedCoordinate?
     func store(coordinate: CachedCoordinate, for address: String)
+    /// Drops every entry whose address isn't in `addresses`, so a deleted contact's
+    /// address doesn't stay on disk.
+    func retainOnly(_ addresses: Set<String>)
     func saveToDisk()
 }
 
@@ -36,10 +39,46 @@ class CacheManager: CacheManaging {
     /// read succeeds, lookups retry it and saves must not replace it with a partial cache.
     private var needsReload = false
 
-    /// Production singleton init — uses the app's documents directory.
+    private static let fileName = "address_cache.json"
+
+    /// Where the production cache lives: Application Support, which isn't shown to the user.
+    /// Saves also exclude it from backup — the app can rebuild it, and it holds every
+    /// contact's address, so it shouldn't outlive deleting the app.
+    static func defaultFileURL(fileManager: FileManager = .default) -> URL {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(fileName)
+    }
+
+    /// Where builds before 1.0 kept the cache. Documents is backed up to iCloud.
+    static func legacyFileURL(fileManager: FileManager = .default) -> URL {
+        fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(fileName)
+    }
+
+    /// Moves a cache file left by an older build to `newURL`. If both exist the newer
+    /// cache wins; either way the old, backed-up copy is removed.
+    static func migrateLegacyFile(from legacyURL: URL, to newURL: URL, fileManager: FileManager = .default) {
+        guard fileManager.fileExists(atPath: legacyURL.path) else { return }
+        do {
+            if fileManager.fileExists(atPath: newURL.path) {
+                try fileManager.removeItem(at: legacyURL)
+                return
+            }
+            try fileManager.createDirectory(at: newURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: legacyURL, to: newURL)
+            excludeFromBackup(newURL)
+        } catch {
+            #if DEBUG
+            print("[CacheManager] Failed to migrate legacy cache: \(error)")
+            #endif
+        }
+    }
+
+    /// Production singleton init — uses Application Support, after moving any old cache out
+    /// of Documents.
     private convenience init() {
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("address_cache.json")
+        let url = Self.defaultFileURL()
+        Self.migrateLegacyFile(from: Self.legacyFileURL(), to: url)
         self.init(fileURL: url)
     }
 
@@ -80,6 +119,13 @@ class CacheManager: CacheManaging {
         queue.sync { cache[address] = coordinate }
     }
 
+    func retainOnly(_ addresses: Set<String>) {
+        queue.sync {
+            reloadIfNeeded()
+            cache = cache.filter { addresses.contains($0.key) }
+        }
+    }
+
     func saveToDisk() {
         let snapshot: [String: CachedCoordinate]? = queue.sync {
             reloadIfNeeded()
@@ -94,7 +140,13 @@ class CacheManager: CacheManaging {
         }
         do {
             let data = try JSONEncoder().encode(snapshot)
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+            // An atomic write replaces the file, dropping its resource values: re-apply every time.
+            Self.excludeFromBackup(fileURL)
         } catch {
             #if DEBUG
             print("[CacheManager] Failed to save cache: \(error)")
@@ -127,6 +179,13 @@ class CacheManager: CacheManaging {
             #endif
             cache = [:]
         }
+    }
+
+    private static func excludeFromBackup(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
     /// Retries a read that failed at launch, keeping anything stored since. Call on `queue`.

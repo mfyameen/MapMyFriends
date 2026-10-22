@@ -42,7 +42,7 @@ class ContactsManager {
 
     private let store = CNContactStore()
 
-    func requestAccessAndFetch(completion: @escaping @Sendable (FetchResult) -> Void) {
+    func requestAccessAndFetch(completion: @escaping @MainActor @Sendable (FetchResult) -> Void) {
         store.requestAccess(for: .contacts) { [weak self] granted, _ in
             guard granted, let self else {
                 Task { @MainActor in completion(.denied) }
@@ -127,7 +127,7 @@ class ContactsManager {
 
     // MARK: - Private
 
-    private nonisolated func fetchContacts(completion: @escaping @Sendable (FetchResult) -> Void) {
+    private nonisolated func fetchContacts(completion: @escaping @MainActor @Sendable (FetchResult) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let store = CNContactStore()
             let result = Self.collectAddresses { request, block in

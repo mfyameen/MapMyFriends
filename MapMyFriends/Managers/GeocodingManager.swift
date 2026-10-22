@@ -134,6 +134,13 @@ class GeocodingManager {
         geocodeSequentially(jobs: jobs, index: 0, attempt: 0, run: run)
     }
 
+    /// Forgets cached locations for addresses no longer in the user's contacts.
+    /// - Parameter addresses: A complete, successful fetch — never a partial one.
+    func forgetAddresses(notIn addresses: [ContactsManager.RawContactAddress]) {
+        cache.retainOnly(Set(addresses.map(\.addressString)))
+        cache.saveToDisk()
+    }
+
     func cancel() {
         runID += 1
         geocoder.cancelInFlight()

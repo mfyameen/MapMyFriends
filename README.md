@@ -15,7 +15,7 @@ Code available at https://github.com/mfyameen/MapMyFriends
 ## Features
 
 - **Contact mapping** — Automatically reads contacts with postal addresses and plots them on a map
-- **Smart caching** — Successful geocodes are persisted to a local JSON file with a 90-day TTL; subsequent launches load instantly
+- **Smart caching** — Successful geocodes are persisted to a local JSON file with a 90-day TTL; subsequent launches load instantly. The file lives in Application Support, is excluded from backups, and drops addresses that are no longer in your contacts
 - **Failures are never cached** — A transient network error, rate limit, or unparseable address is retried when the app next returns to the foreground (or relaunches) instead of hiding the contact
 - **Rate-limit backoff** — When Apple throttles geocoding, the same address is retried with exponential backoff instead of being dropped, so a first launch with hundreds of contacts maps all of them
 - **Expired entries stay visible** — A cache entry past its 90-day TTL still shows its pin immediately while a fresh geocode refreshes it in the background
@@ -23,7 +23,7 @@ Code available at https://github.com/mfyameen/MapMyFriends
 - **Contact photo pins** — Contacts with a photo appear as their circular photo in a white ring, with their name underneath like the blue markers; everyone else gets the blue person marker. Both kinds cluster together
 - **Pin clustering** — MapKit's native clustering groups nearby pins; tapping a cluster zooms in to reveal members
 - **Same-location clusters** — When contacts share an address, or the map is already zoomed all the way in, tapping the cluster lists every member instead of zooming further
-- **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter
+- **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter. After the launch view the map never moves on its own
 - **Proximity sorting** — Cached contacts are delivered nearest-first so nearby pins appear on the map before distant ones
 - **Callout actions** — Tap any pin to open the contact in the Contacts app, or (via Settings) show Call/Message options
 - **Live contact sync** — Listens for `CNContactStoreDidChange` and diffs contacts to add/remove only changed pins; changes are debounced and deferred until the first geocoding pass finishes
@@ -91,6 +91,9 @@ MapMyFriends/
 - **Injectable geocoder** — `GeocodingManager` talks to an `AddressGeocoding` protocol (`MapKitGeocoder` in production, a mock in tests), so the whole pipeline can be exercised deterministically with no network access.
 - **Single cache lookup** — `GeocodingManager` resolves contacts directly from the first cache lookup, eliminating a previous double-lookup race condition.
 - **Incremental persistence** — Cache saves to disk every 10 geocodes during sequential processing, protecting partial progress.
+- **Cache location** — `CacheManager.defaultFileURL()` is in Application Support, and every save sets `isExcludedFromBackup`. The cache can be rebuilt and holds every contact's address, so it follows Apple's data-storage guidance and doesn't survive in iCloud backups after the app is deleted. Builds that kept it in Documents are migrated on first launch (`migrateLegacyFile`), keeping the newer file if both exist.
+- **Cache pruning** — After every complete, successful contact fetch, `GeocodingManager.forgetAddresses(notIn:)` drops cache entries for addresses no longer in Contacts, so a deleted contact's address doesn't linger on disk. Failed or denied fetches never prune.
+- **The map moves on its own once** — `InitialCameraPolicy` allows one launch view: centered on the first location fix, or framing every contact when there's no location. Later geocoding runs (contact edits, foreground retries) never move the camera. Location updates stop after the first fix; the map tracks the blue dot itself.
 - **Sequential geocoding with delay** — Addresses are geocoded one at a time with a 0.15s delay. When Apple still throttles (`MKError.loadingThrottled`), the same address is retried up to 4 times with exponential backoff (5s, 10s, 20s, 40s) before it is reported as failed for this run. The walk is a loop rather than per-address recursion, so a synchronous geocoder can't build a deep stack.
 - **Runs are versioned** — Every `process()`/`cancel()` bumps a run ID. A geocode response or delayed step from a cancelled run is dropped, so a contact refresh can't resurrect deleted contacts, duplicate pins, or report completion twice.
 - **Only plottable coordinates** — A NaN or out-of-range coordinate is treated as a failed geocode, and the cache refuses NaN (which would make the whole JSON file unencodable).
@@ -118,7 +121,7 @@ MapMyFriends/
 
 ## Tests
 
-The project includes 181 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
+The project includes 194 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
 
 ```
 MapMyFriendsTests/
@@ -146,6 +149,7 @@ MapMyFriendsTests/
 ├── MissingPinTests.swift                # Every known way a contact could fail to reach the map
 ├── PhotoPinTests.swift                  # Photo pin choice, rendering (pixel-checked), name label, reuse, live photo changes
 ├── PinWiringTests.swift                 # View registration and per-annotation view choice on a real MKMapView
+├── ReviewFixTests.swift                 # Camera policy, cache location/migration/backup exclusion, cache pruning
 └── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 

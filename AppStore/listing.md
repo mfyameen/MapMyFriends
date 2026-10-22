@@ -103,12 +103,17 @@ Leave blank on the first release.
 - Availability: all countries and regions *(confirm)*
 - Distribution: Public on the App Store
 
-## Screenshots (to do later)
+## Screenshots
 
-- Required: **6.9" iPhone** (1320 × 2868 portrait), 3–10 images. Smaller iPhone sizes are scaled down from these automatically.
-- Not needed: iPad (the app is iPhone-only).
-- Suggested shots: (1) clustered pins across a country, (2) zoomed into a city with individual pins, (3) a pin's callout, (4) the same-address contact list, (5) the About page / privacy message.
-- Use the fake contacts from `MapMyFriendsTests/Fixtures/contacts-1000.json`, never real ones.
+Ready to upload: [`AppStore/screenshots/`](screenshots/). Five 6.9" iPhone screenshots (1320 × 2868, JPEG, no transparency), taken in the iPhone 17 Pro Max simulator with made-up San Francisco contacts and illustrated avatars, so no real person appears. Upload them in this order:
+
+1. `1-city.jpg`: the city with photo pins, names and clusters
+2. `2-callout.jpg`: a contact's callout with their address
+3. `3-call-message.jpg`: the Call / Message sheet
+4. `4-same-address.jpg`: "4 contacts here", several people at one address
+5. `5-privacy.jpg`: the About page and its privacy promise
+
+Smaller iPhone sizes are scaled down from these automatically. No iPad screenshots are needed, since the app is iPhone-only.
 
 ## Export Compliance
 

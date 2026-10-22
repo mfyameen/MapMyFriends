@@ -34,6 +34,47 @@ class MapViewController: UIViewController {
     /// session. They're retried the next time the app comes to the foreground.
     private(set) var hasUnmappedAddresses = false
 
+    /// What the empty-map card says, or `nil` when it's hidden.
+    enum EmptyState: Equatable {
+        /// A complete fetch found no contact with an address.
+        case noAddresses(limitedAccess: Bool)
+    }
+    /// Set only from complete, successful fetches: denied or failed ones say nothing about
+    /// what's in Contacts.
+    private(set) var emptyState: EmptyState? {
+        didSet { updateEmptyCard() }
+    }
+    private let emptyCard = EmptyMapCardView()
+
+    /// Addresses that aren't on the map, keyed like pins (`UnmappedContact.key`).
+    private var unmappedByKey: [String: UnmappedContact] = [:] {
+        didSet { updateUnmappedButton() }
+    }
+    private let unmappedButton = UIButton(configuration: .filled())
+
+    /// Contacts whose address isn't on the map, in list order.
+    var unmappedContacts: [UnmappedContact] {
+        unmappedByKey.values.sorted { a, b in
+            switch a.fullName.localizedStandardCompare(b.fullName) {
+            case .orderedAscending: true
+            case .orderedDescending: false
+            case .orderedSame: a.addressString.localizedStandardCompare(b.addressString) == .orderedAscending
+            }
+        }
+    }
+
+    /// Whether the "N not on the map" button is showing.
+    var isShowingUnmappedButton: Bool { !unmappedButton.isHidden }
+
+    /// Location is asked for once, after the first complete contacts load, so the prompt
+    /// doesn't land on top of the Contacts one.
+    private var hasRequestedLocation = false
+
+    /// The user moved the map by hand; from now on it never moves on its own.
+    func userDidMoveMap() {
+        camera.noteUserMovedMap()
+    }
+
     // MARK: - Lifecycle
 
     /// Every dependency defaults to the real one; tests pass fakes. Defaults are built in the
@@ -68,6 +109,7 @@ class MapViewController: UIViewController {
         )
 
         setupMapView()
+        setupOverlays()
         setupGeocodingCallbacks()
         setupLocationManager()
         observeContactChanges()
@@ -118,7 +160,15 @@ class MapViewController: UIViewController {
     // MARK: - Location
 
     private func setupLocationManager() {
+        // Authorization is requested later, by `requestLocationIfNeeded`. If it was granted on
+        // an earlier launch, setting the delegate is enough: the authorization callback starts
+        // updates right away.
         locationManager.delegate = self
+    }
+
+    private func requestLocationIfNeeded() {
+        guard !hasRequestedLocation else { return }
+        hasRequestedLocation = true
         locationManager.requestWhenInUseAuthorization()
     }
 
@@ -185,6 +235,13 @@ class MapViewController: UIViewController {
             guard let self else { return }
             if case .success(let allAddresses) = result {
                 self.geocodingManager.forgetAddresses(notIn: allAddresses)
+                self.emptyState = allAddresses.isEmpty
+                    ? .noAddresses(limitedAccess: self.contactsManager.hasLimitedAccess)
+                    : nil
+                if allAddresses.isEmpty {
+                    // Nothing to geocode, so there's no completion to wait for.
+                    self.requestLocationIfNeeded()
+                }
             }
             guard case .success(let rawAddresses) = result, !rawAddresses.isEmpty else {
                 if case .denied = result {
@@ -214,7 +271,13 @@ class MapViewController: UIViewController {
             switch result {
             case .success(let rawAddresses):
                 self.geocodingManager.forgetAddresses(notIn: rawAddresses)
+                self.emptyState = rawAddresses.isEmpty
+                    ? .noAddresses(limitedAccess: self.contactsManager.hasLimitedAccess)
+                    : nil
                 self.diffAndUpdate(newAddresses: rawAddresses)
+                if rawAddresses.isEmpty {
+                    self.requestLocationIfNeeded()
+                }
             case .denied, .failed:
                 // Not knowing what's in the store is not the same as it being empty:
                 // leave every pin alone and try again later.
@@ -240,6 +303,12 @@ class MapViewController: UIViewController {
             mapView.removeAnnotations(annotationsToRemove)
         }
 
+        // Forget unmapped entries for deleted contacts, and clear the ones about to be retried
+        // (anything unmapped has no pin, so it's always in `toAdd`); the run reports them again.
+        let currentKeys = Set(newAddresses.map { "\($0.contactID)|\($0.addressString)" })
+        let retrying = Set(result.toAdd.map { "\($0.contactID)|\($0.addressString)" })
+        unmappedByKey = unmappedByKey.filter { currentKeys.contains($0.key) && !retrying.contains($0.key) }
+
         // Geocode and add new addresses
         if !result.toAdd.isEmpty {
             geocodingManager.process(
@@ -253,6 +322,14 @@ class MapViewController: UIViewController {
         geocodingManager.onContactResolved = { [weak self] mappedContact in
             let annotation = ContactAnnotation(mappedContact: mappedContact)
             self?.mapView.addAnnotation(annotation)
+            self?.unmappedByKey["\(mappedContact.contactID)|\(mappedContact.addressString)"] = nil
+        }
+
+        geocodingManager.onSummary = { [weak self] summary in
+            guard let self, !summary.unmapped.isEmpty else { return }
+            for contact in summary.unmapped {
+                self.unmappedByKey[contact.key] = contact
+            }
         }
 
         geocodingManager.onProgress = { [weak self] completed, total in
@@ -267,6 +344,8 @@ class MapViewController: UIViewController {
             }
             self.hideProgressBanner()
             self.centerOnAnnotationsIfNeeded()
+            // The pins are on the map now, so the location prompt has context.
+            self.requestLocationIfNeeded()
             if failedCount > 0, !FeatureFlags.hideGeocodingToasts {
                 self.showGeocodingFailureBanner(count: failedCount)
             }
@@ -276,6 +355,116 @@ class MapViewController: UIViewController {
                 self.scheduleContactRefresh()
             }
         }
+    }
+
+    // MARK: - Overlays
+
+    private func setupOverlays() {
+        // The map's own "Maps / Legal" attribution sits bottom-left and must stay visible, and
+        // the tracking button is bottom-right, so these go at the top.
+        emptyCard.translatesAutoresizingMaskIntoConstraints = false
+        emptyCard.isHidden = true
+        emptyCard.onShareMoreContacts = { [weak self] in
+            self?.showContactAccessPicker()
+        }
+        view.addSubview(emptyCard)
+
+        unmappedButton.translatesAutoresizingMaskIntoConstraints = false
+        unmappedButton.isHidden = true
+        unmappedButton.configuration?.baseBackgroundColor = .systemBackground
+        unmappedButton.configuration?.baseForegroundColor = .label
+        unmappedButton.configuration?.cornerStyle = .capsule
+        unmappedButton.configuration?.image = UIImage(systemName: "mappin.slash")
+        unmappedButton.configuration?.imagePadding = 6
+        unmappedButton.configuration?.imageColorTransformer = UIConfigurationColorTransformer { _ in .systemOrange }
+        unmappedButton.layer.shadowColor = UIColor.black.cgColor
+        unmappedButton.layer.shadowOpacity = 0.15
+        unmappedButton.layer.shadowRadius = 6
+        unmappedButton.layer.shadowOffset = CGSize(width: 0, height: 2)
+        unmappedButton.accessibilityHint = "Lists contacts whose address couldn't be placed on the map."
+        unmappedButton.addAction(UIAction { [weak self] _ in self?.showUnmappedContacts() }, for: .primaryActionTriggered)
+        view.addSubview(unmappedButton)
+
+        NSLayoutConstraint.activate([
+            emptyCard.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            emptyCard.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            emptyCard.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            emptyCard.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            {
+                // Full width up to the cap, but give way to the 16 pt margins on phones.
+                let preferred = emptyCard.widthAnchor.constraint(equalToConstant: 420)
+                preferred.priority = .defaultHigh
+                return preferred
+            }(),
+            unmappedButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            unmappedButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+        ])
+
+        let gestures: [UIGestureRecognizer] = [UIPanGestureRecognizer(), UIPinchGestureRecognizer(), UIRotationGestureRecognizer()]
+        for gesture in gestures {
+            // Only listens: the map's own recognizers still do the panning and zooming.
+            gesture.addTarget(self, action: #selector(mapGesture(_:)))
+            gesture.cancelsTouchesInView = false
+            gesture.delegate = self
+            mapView.addGestureRecognizer(gesture)
+        }
+    }
+
+    @objc private func mapGesture(_ gesture: UIGestureRecognizer) {
+        if gesture.state == .began {
+            userDidMoveMap()
+        }
+    }
+
+    private func updateEmptyCard() {
+        guard let emptyState else {
+            emptyCard.isHidden = true
+            return
+        }
+        switch emptyState {
+        case .noAddresses(let limitedAccess):
+            emptyCard.configure(limitedAccess: limitedAccess)
+        }
+        emptyCard.isHidden = false
+    }
+
+    private func updateUnmappedButton() {
+        let count = unmappedByKey.count
+        unmappedButton.isHidden = count == 0
+        unmappedButton.configuration?.title = "\(count) not on the map"
+    }
+
+    private func showContactAccessPicker() {
+        var host: UIHostingController<ContactAccessPickerHost>?
+        let picker = ContactAccessPickerHost { [weak self] in
+            // Called on pick or cancel; only dismiss our own transparent host once.
+            guard let presented = host, presented.presentingViewController != nil else { return }
+            host = nil
+            self?.dismiss(animated: false)
+            // Sharing more contacts doesn't post CNContactStoreDidChange, so reload explicitly.
+            self?.scheduleContactRefresh()
+        }
+        let controller = UIHostingController(rootView: picker)
+        controller.view.backgroundColor = .clear
+        controller.modalPresentationStyle = .overFullScreen
+        host = controller
+        present(controller, animated: false)
+    }
+
+    private func showUnmappedContacts() {
+        let list = UnmappedContactsView(
+            contacts: unmappedContacts,
+            onSelect: { [weak self] contact in
+                self?.dismiss(animated: true) {
+                    self?.openInContacts(contactID: contact.contactID, allowsEditing: true)
+                }
+            },
+            onDone: { [weak self] in self?.dismiss(animated: true) }
+        )
+        let host = UIHostingController(rootView: list)
+        host.sheetPresentationController?.detents = [.medium(), .large()]
+        host.sheetPresentationController?.prefersGrabberVisible = true
+        present(host, animated: true)
     }
 
     // MARK: - Progress Banner
@@ -455,6 +644,7 @@ extension MapViewController: MKMapViewDelegate {
             present(sheet, animated: true)
 
         case .zoom(let rect):
+            userDidMoveMap()
             let padding = UIEdgeInsets(top: 60, left: 40, bottom: 60, right: 40)
             mapView.setVisibleMapRect(rect, edgePadding: padding, animated: true)
         }
@@ -474,7 +664,9 @@ extension MapViewController: MKMapViewDelegate {
         }
     }
 
-    private func openInContacts(contactID: String) {
+    /// - Parameter allowsEditing: `true` from the unmapped list, where the point is fixing
+    ///   the address; saving triggers a contact refresh that re-geocodes it.
+    private func openInContacts(contactID: String, allowsEditing: Bool = false) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let cnContact = try CNContactStore().unifiedContact(
@@ -483,7 +675,7 @@ extension MapViewController: MKMapViewDelegate {
                 )
                 DispatchQueue.main.async {
                     let contactVC = CNContactViewController(for: cnContact)
-                    contactVC.allowsEditing = false
+                    contactVC.allowsEditing = allowsEditing
                     self?.navigationController?.pushViewController(contactVC, animated: true)
                 }
             } catch {
@@ -559,5 +751,18 @@ extension MapViewController: CLLocationManagerDelegate {
         default:
             break
         }
+    }
+}
+
+// MARK: - UIGestureRecognizerDelegate
+
+extension MapViewController: UIGestureRecognizerDelegate {
+
+    /// The "user moved the map" listeners run alongside MapKit's own gestures.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 }

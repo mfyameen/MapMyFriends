@@ -27,6 +27,8 @@ class GeocodingManager {
         var refreshedExpired = 0
         /// Subset of `failed` skipped without a request: Apple Maps recently said it can't find them.
         var skippedNotFound = 0
+        /// Every address that didn't make it onto the map this run, and why.
+        var unmapped: [UnmappedContact] = []
 
         var attempted: Int { resolvedFromCache + resolvedFromExpiredCache + geocoded + failed }
     }
@@ -55,6 +57,8 @@ class GeocodingManager {
     private let requestDelay: TimeInterval
     /// Base wait after Apple throttles a request; doubles on each consecutive throttle.
     private let rateLimitBackoff: TimeInterval
+    /// The pause between lookups once Apple has throttled this run.
+    private let throttledRequestDelay: TimeInterval
     /// Identifies the current run. `cancel()` and `process()` bump it, so responses and
     /// scheduled steps belonging to an earlier run are recognized and dropped.
     private var runID = 0
@@ -67,13 +71,19 @@ class GeocodingManager {
         cache: CacheManaging? = nil,
         geocoder: AddressGeocoding? = nil,
         requestDelay: TimeInterval = 0.15,
-        rateLimitBackoff: TimeInterval = 5
+        rateLimitBackoff: TimeInterval = 5,
+        throttledRequestDelay: TimeInterval = 1.3
     ) {
         self.cache = cache ?? CacheManager.shared
         self.geocoder = geocoder ?? MapKitGeocoder()
         self.requestDelay = requestDelay
         self.rateLimitBackoff = rateLimitBackoff
+        self.throttledRequestDelay = throttledRequestDelay
+        self.currentRequestDelay = requestDelay
     }
+
+    /// The pause between lookups right now: `requestDelay`, until Apple throttles this run.
+    private(set) var currentRequestDelay: TimeInterval
 
     /// Process addresses for geocoding. If `userLocation` is provided, cached contacts are
     /// delivered nearest-first so nearby pins appear on the map before distant ones.
@@ -81,6 +91,8 @@ class GeocodingManager {
         runID += 1
         let run = runID
         summary = Summary()
+        // Apple's throttle is a short window; a new run (an edit, a foreground) starts fast again.
+        currentRequestDelay = requestDelay
 
         var resolvedHits: [MappedContact] = []
         var cacheMisses: [Job] = []
@@ -95,6 +107,7 @@ class GeocodingManager {
                 // spend rate-limit budget. Tried again once the entry expires.
                 summary.failed += 1
                 summary.skippedNotFound += 1
+                summary.unmapped.append(unmapped(address, .addressNotFound))
                 continue
             }
 
@@ -190,6 +203,10 @@ class GeocodingManager {
         )
     }
 
+    private func unmapped(_ address: ContactsManager.RawContactAddress, _ reason: UnmappedContact.Reason) -> UnmappedContact {
+        UnmappedContact(contactID: address.contactID, fullName: address.fullName, addressString: address.addressString, reason: reason)
+    }
+
     /// - Parameter attempt: How many times `jobs[index]` has already been throttled.
     private func geocodeSequentially(jobs: [Job], index: Int, attempt: Int, run: Int) {
         var index = index
@@ -218,6 +235,17 @@ class GeocodingManager {
                 // Cancelling doesn't stop a response already on its way; drop it.
                 guard let self, run == self.runID else { return }
 
+                if case .rateLimited = outcome {
+                    // Apple's limit applies to every lookup, not just this one: slow the rest of
+                    // the run to roughly that limit instead of re-tripping it at full speed.
+                    if self.currentRequestDelay < self.throttledRequestDelay {
+                        self.currentRequestDelay = self.throttledRequestDelay
+                        #if DEBUG
+                        print("[GeocodingManager] Throttled; slowing to one lookup per \(self.throttledRequestDelay)s for this run")
+                        #endif
+                    }
+                }
+
                 let next: (index: Int, attempt: Int, delay: TimeInterval)
                 if case .rateLimited = outcome, !job.isRefresh, attempt < Self.maxRateLimitRetries {
                     // Throttled: wait it out and retry the same address.
@@ -231,7 +259,7 @@ class GeocodingManager {
                         self.cache.saveToDisk()
                     }
                     // Delay before next geocode to respect Apple rate limits
-                    next = (completed, 0, self.requestDelay)
+                    next = (completed, 0, self.currentRequestDelay)
                 }
 
                 guard next.delay > 0 else {
@@ -286,6 +314,7 @@ class GeocodingManager {
             // NaN or out-of-range coordinate: unplottable, and NaN would make the cache
             // file unencodable. Treat it like any other failed geocode.
             summary.failed += 1
+            summary.unmapped.append(unmapped(address, .addressNotFound))
             #if DEBUG
             print("[GeocodingManager] Invalid coordinate for '\(address.addressString)'")
             #endif
@@ -296,6 +325,7 @@ class GeocodingManager {
             // encoding quirks. Retry on the next launch.
             summary.failed += 1
             summary.invalidAddressStrings += 1
+            summary.unmapped.append(unmapped(address, .addressNotFound))
             #if DEBUG
             print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
             #endif
@@ -306,6 +336,7 @@ class GeocodingManager {
                 for: address.addressString
             )
             summary.failed += 1
+            summary.unmapped.append(unmapped(address, .addressNotFound))
             #if DEBUG
             print("[GeocodingManager] Not found, won't retry for a day: '\(address.addressString)'")
             #endif
@@ -313,6 +344,7 @@ class GeocodingManager {
         case .rateLimited:
             // Still throttled after every retry. Not cached — retry next launch.
             summary.failed += 1
+            summary.unmapped.append(unmapped(address, .couldNotConnect))
             #if DEBUG
             print("[GeocodingManager] Rate limited, giving up for now: '\(address.addressString)'")
             #endif
@@ -321,6 +353,7 @@ class GeocodingManager {
             // Deliberately NOT cached as a failure. A transient network error or rate limit
             // must not hide this contact until a cache entry expires — retry next launch.
             summary.failed += 1
+            summary.unmapped.append(unmapped(address, .couldNotConnect))
             #if DEBUG
             print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(reason ?? "no results")")
             #endif

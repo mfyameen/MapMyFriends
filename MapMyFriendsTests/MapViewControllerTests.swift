@@ -24,6 +24,7 @@ private final class FakeContacts: ContactFetching {
     private var results: [ContactsManager.FetchResult]
     private let deliversLater: Bool
     private(set) var fetchCount = 0
+    var hasLimitedAccess = false
 
     /// - Parameter deliversLater: Answer on a later main-queue turn, like the real store,
     ///   instead of before `requestAccessAndFetch` returns.
@@ -78,7 +79,8 @@ private struct Session {
         fetches: [ContactsManager.FetchResult],
         cached: [String] = [],
         geocoder: MockGeocoder? = nil,
-        deliversLater: Bool = false
+        deliversLater: Bool = false,
+        limitedAccess: Bool = false
     ) {
         cache = MockCacheManager()
         for street in cached { cache.storeSuccess(street) }
@@ -86,18 +88,23 @@ private struct Session {
         let geocoder = geocoder ?? MockGeocoder.alwaysSucceeding()
         self.geocoder = geocoder
         contacts = FakeContacts(fetches, deliversLater: deliversLater)
+        contacts.hasLimitedAccess = limitedAccess
         location = FakeLocation()
         controller = MapViewController(
             contacts: contacts,
-            geocoding: GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0, rateLimitBackoff: 0),
+            geocoding: GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0, rateLimitBackoff: 0, throttledRequestDelay: 0),
             location: location,
             contactChangeDebounceInterval: 0
         )
     }
 
-    /// Runs `viewDidLoad`, which requests access and does the initial load.
+    /// Runs `viewDidLoad`, which requests access and does the initial load. The view gets a
+    /// phone-sized frame: a zero-sized map ignores region changes, which would make every
+    /// camera assertion pass by accident.
     func launch() {
         controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+        controller.view.layoutIfNeeded()
     }
 }
 
@@ -258,8 +265,157 @@ struct MapViewControllerTests {
         let session = Session(fetches: [.success([])])
         session.launch()
 
-        session.controller.locationManager(CLLocationManager(), didUpdateLocations: [CLLocation(latitude: 37.3, longitude: -122.0)])
+        // Far from the simulator's location, so the map can't already be there by chance.
+        session.controller.locationManager(CLLocationManager(), didUpdateLocations: [CLLocation(latitude: -45, longitude: 170)])
 
-        #expect(abs(session.controller.mapView.region.center.latitude - 37.3) < 0.5)
+        let center = session.controller.mapView.region.center
+        #expect(abs(center.latitude - -45) < 0.5 && abs(center.longitude - 170) < 0.5)
+    }
+
+    // Location is asked for after the pins appear (review decision #1)
+
+    @Test func locationIsAskedForOnlyOnceThePinsAreOnTheMap() async throws {
+        let session = Session(fetches: [.success([address("a")])], cached: ["a"], deliversLater: true)
+
+        session.launch()
+        #expect(session.location.authorizationRequests == 0, "Two permission prompts back to back at launch")
+
+        try await settle()
+        #expect(session.location.authorizationRequests == 1)
+    }
+
+    @Test func noLocationPromptWhenContactsAccessIsDenied() async throws {
+        let session = Session(fetches: [.denied], deliversLater: true)
+
+        session.launch()
+        try await settle()
+
+        #expect(session.location.authorizationRequests == 0, "Without contacts there's nothing to show nearby")
+    }
+
+    // The map stays where the user put it (review decision #8)
+
+    @Test func movingTheMapBeforeTheFirstFixKeepsItThere() {
+        let session = Session(fetches: [.success([])])
+        session.launch()
+
+        session.controller.userDidMoveMap()
+        // A fix far from anywhere the map could already be showing.
+        session.controller.locationManager(CLLocationManager(), didUpdateLocations: [CLLocation(latitude: -45, longitude: 170)])
+
+        let center = session.controller.mapView.region.center
+        #expect(abs(center.latitude - -45) > 1 || abs(center.longitude - 170) > 1, "The map jumped to the user mid-pan")
+        #expect(session.location.stopCount == 1, "Updates still stop after the first fix")
+    }
+
+    // Empty map card (review decision #2)
+
+    @Test func noContactsWithAddressesShowsTheEmptyCard() {
+        let session = Session(fetches: [.success([])])
+
+        session.launch()
+
+        #expect(session.controller.emptyState == .noAddresses(limitedAccess: false))
+    }
+
+    @Test func limitedAccessWithNothingSharedOffersToShareMore() {
+        let session = Session(fetches: [.success([])], limitedAccess: true)
+
+        session.launch()
+
+        #expect(session.controller.emptyState == .noAddresses(limitedAccess: true))
+    }
+
+    @Test func contactsWithAddressesHideTheEmptyCard() {
+        let session = Session(fetches: [.success([address("a")])], cached: ["a"])
+
+        session.launch()
+
+        #expect(session.controller.emptyState == nil)
+    }
+
+    @Test func emptyCardFollowsRefreshes() async throws {
+        let session = Session(fetches: [.success([address("a")]), .success([]), .success([address("b")])], cached: ["a", "b"])
+        session.launch()
+
+        NotificationCenter.default.post(name: .CNContactStoreDidChange, object: nil)
+        try await settle()
+        #expect(session.controller.emptyState == .noAddresses(limitedAccess: false), "Last contact with an address deleted")
+
+        NotificationCenter.default.post(name: .CNContactStoreDidChange, object: nil)
+        try await settle()
+        #expect(session.controller.emptyState == nil, "An address was added back")
+    }
+
+    @Test func deniedOrFailedFetchesDontClaimThereAreNoAddresses() {
+        for result in [ContactsManager.FetchResult.denied, .failed] {
+            let session = Session(fetches: [result])
+            session.launch()
+            #expect(session.controller.emptyState == nil, "\(result) says nothing about what's in Contacts")
+        }
+    }
+
+    // Unmapped contacts button and list (review decision #3)
+
+    @Test func unmappedContactsAreListedWithTheirReason() {
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        geocoder.fail("offline")
+        geocoder.outcomes["nowhere"] = .notFound
+        let session = Session(fetches: [.success([address("a"), address("offline"), address("nowhere")])], cached: ["a"], geocoder: geocoder)
+
+        session.launch()
+
+        let reasons = Dictionary(uniqueKeysWithValues: session.controller.unmappedContacts.map { ($0.addressString, $0.reason) })
+        #expect(reasons == ["offline": .couldNotConnect, "nowhere": .addressNotFound])
+        #expect(session.controller.isShowingUnmappedButton)
+    }
+
+    @Test func everythingMappedHidesTheButton() {
+        let session = Session(fetches: [.success([address("a")])], cached: ["a"])
+
+        session.launch()
+
+        #expect(session.controller.unmappedContacts.isEmpty)
+        #expect(!session.controller.isShowingUnmappedButton)
+    }
+
+    @Test func aContactThatMapsOnRetryLeavesTheList() async throws {
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        geocoder.fail("b")
+        let session = Session(fetches: [.success([address("a"), address("b")])], cached: ["a"], geocoder: geocoder)
+        session.launch()
+        #expect(session.controller.unmappedContacts.map(\.addressString) == ["b"])
+
+        geocoder.succeed("b")
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        try await settle()
+
+        #expect(session.controller.unmappedContacts.isEmpty)
+        #expect(!session.controller.isShowingUnmappedButton)
+    }
+
+    @Test func aDeletedContactLeavesTheList() async throws {
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        geocoder.outcomes["nowhere"] = .notFound
+        let session = Session(fetches: [.success([address("a"), address("nowhere")]), .success([address("a")])], cached: ["a"], geocoder: geocoder)
+        session.launch()
+        #expect(session.controller.unmappedContacts.count == 1)
+
+        NotificationCenter.default.post(name: .CNContactStoreDidChange, object: nil)
+        try await settle()
+
+        #expect(session.controller.unmappedContacts.isEmpty)
+    }
+
+    @Test func unmappedListIsSortedByName() {
+        let geocoder = MockGeocoder(defaultOutcome: .notFound)
+        let contacts = ["Zoe", "adam", "Mia"].map {
+            ContactsManager.RawContactAddress(contactID: $0, fullName: $0, addressLabel: "Home", addressString: "\($0) St", thumbnailImageData: nil, phoneNumber: nil)
+        }
+        let session = Session(fetches: [.success(contacts)], geocoder: geocoder)
+
+        session.launch()
+
+        #expect(session.controller.unmappedContacts.map(\.fullName) == ["adam", "Mia", "Zoe"])
     }
 }

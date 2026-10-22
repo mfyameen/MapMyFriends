@@ -40,5 +40,9 @@ class ContactAnnotationView: MKMarkerAnnotationView {
         if rightCalloutAccessoryView == nil {
             rightCalloutAccessoryView = UIButton(type: .detailDisclosure)
         }
+        isAccessibilityElement = true
+        accessibilityLabel = (annotation as? ContactAnnotation)?.accessibilityDescription
+        accessibilityHint = "Double-tap to show details."
+        accessibilityTraits = .button
     }
 }

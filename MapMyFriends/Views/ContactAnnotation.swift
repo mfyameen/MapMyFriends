@@ -16,6 +16,15 @@ class ContactAnnotation: NSObject, MKAnnotation {
         self.mappedContact = mappedContact
     }
 
+    /// What VoiceOver reads for this pin: name, label and the address with its line breaks
+    /// turned into pauses.
+    var accessibilityDescription: String {
+        let address = mappedContact.addressString
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: ", ")
+        return "\(mappedContact.fullName), \(mappedContact.addressLabel), \(address)"
+    }
+
     /// The contact's photo, if it has one that decodes. Decoded once, on first display.
     private(set) lazy var photo: UIImage? = mappedContact.thumbnailImageData.flatMap(UIImage.init(data:))
 

@@ -43,6 +43,10 @@ class ContactsManager {
 
     private let store = CNContactStore()
 
+    var hasLimitedAccess: Bool {
+        CNContactStore.authorizationStatus(for: .contacts) == .limited
+    }
+
     func requestAccessAndFetch(completion: @escaping @MainActor @Sendable (FetchResult) -> Void) {
         store.requestAccess(for: .contacts) { [weak self] granted, _ in
             guard granted, let self else {

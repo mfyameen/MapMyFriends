@@ -79,6 +79,7 @@ class ContactPhotoAnnotationView: MKAnnotationView {
         nameLabel.textAlignment = .center
         nameLabel.numberOfLines = 2
         nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.isAccessibilityElement = false
         // A halo in the map's background colour keeps the name readable over streets and parks.
         nameLabel.layer.shadowOffset = .zero
         nameLabel.layer.shadowRadius = 1.5
@@ -112,6 +113,12 @@ class ContactPhotoAnnotationView: MKAnnotationView {
         nameLabel.text = annotation?.title ?? nil
         nameLabel.isHidden = isSelected
         setNeedsLayout()
+
+        // The pin reads the whole description; the name label underneath must not be read again.
+        isAccessibilityElement = true
+        accessibilityLabel = (annotation as? ContactAnnotation)?.accessibilityDescription
+        accessibilityHint = "Double-tap to show details."
+        accessibilityTraits = .button
     }
 
     /// Shown while a reused view has no contact annotation; rendered once.

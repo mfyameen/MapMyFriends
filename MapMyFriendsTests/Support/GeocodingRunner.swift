@@ -27,7 +27,7 @@ struct GeocodingRunResult {
 enum GeocodingRunner {
 
     static func makeManager(cache: CacheManaging, geocoder: AddressGeocoding) -> GeocodingManager {
-        GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0, rateLimitBackoff: 0)
+        GeocodingManager(cache: cache, geocoder: geocoder, requestDelay: 0, rateLimitBackoff: 0, throttledRequestDelay: 0)
     }
 
     /// Runs `process()` to completion, capturing every callback.

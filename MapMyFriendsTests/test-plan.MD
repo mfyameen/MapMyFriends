@@ -1,7 +1,7 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 226 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service, and the host app shows a blank screen under tests (`AppEnvironment.isRunningTests`) instead of loading contacts. Most run synchronously; `pendingStepFromCancelledRunDoesNotResume` and the refresh/foreground tests in `MapViewControllerTests` wait briefly for real main-queue scheduling. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `plan.MD`.
+The project has 253 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service, and the host app shows a blank screen under tests (`AppEnvironment.isRunningTests`) instead of loading contacts. Most run synchronously; `pendingStepFromCancelledRunDoesNotResume` and the refresh/foreground tests in `MapViewControllerTests` wait briefly for real main-queue scheduling. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `archive/plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
@@ -191,7 +191,18 @@ These tests describe behaviour that already worked, so each was checked by break
 ### 18. App Environment Tests (`AppEnvironmentTests.swift`)
 - The app detects that it's hosting the tests and skips building the map
 
-### 19. Cache Persistence Integration (`CacheIntegrationTests.swift`)
+### 19. Review Decision Tests (`ReviewDecisionTests.swift`)
+Changes agreed after the review, each written to fail first.
+- **Map-moved rule**: once the user moves the map there's no centering on the user and no contact framing; an untouched map still centers on the first fix
+- **Throttle pacing**: a throttle slows the rest of the run to `throttledRequestDelay` without losing anyone; an unthrottled run keeps its pace; each run starts fast
+- **Unmapped report**: every unmapped address is reported with its reason (not found, invalid and unplottable → address not found; network failure and exhausted throttling → couldn't connect); remembered not-found addresses are reported; refresh failures aren't (the pin is showing)
+- **VoiceOver**: markers and photo pins read "name, label, address" with line breaks as pauses and a hint; the photo pin's name label isn't read twice; reused pins read the new contact; clusters read "N contacts"
+
+`MapViewControllerTests` also covers the controller side: Location is asked for only after the pins appear and never when Contacts is denied; moving the map before the first fix keeps it there; the empty card appears for an empty complete fetch (with the limited-access variant), follows refreshes, and never appears for denied or failed fetches; unmapped contacts are listed with reasons and sorted, the button hides when everything maps, and entries leave the list when they map on retry or the contact is deleted.
+
+Three of these passed against the placeholders (the map-moved controller test, "each run starts fast", and the photo pin name not being read twice), so each was checked by breaking the behaviour on purpose and confirming the test failed. That check exposed that the controller tests' map had zero size, so region changes were ignored and camera assertions could pass by accident; `Session.launch()` now gives the view a phone-sized frame, and both camera tests use a location far from the simulator's.
+
+### 20. Cache Persistence Integration (`CacheIntegrationTests.swift`)
 End-to-end test using a real temp file (no mocks).
 - **Write → kill → read**: Create a CacheManager with a temp file, store entries, save, deallocate, create a new instance from the same file, verify all entries are present
 - **Concurrent reads**: Store entries, save, read from multiple threads — verify no crashes (smoke test)
@@ -206,7 +217,7 @@ python3 MapMyFriendsTests/Fixtures/generate_contacts_fixture.py
 
 ## What's NOT Tested (and why)
 - **ContactsManager permission prompt and real store**: `requestAccess` and `CNContactStore.enumerateContacts` need a real store with contacts permission. Everything they feed into is tested through the static seams above.
-- **MapViewController presentation details**: the cluster list and Call / Message sheets, banners and the About screen are checked by hand in the simulator. Its loading, refresh, retry, pruning and location logic *is* tested (`MapViewControllerTests`), as are the pieces it delegates to (`ContactChangeCoalescer`, `ClusterTapResolver`, `ContactPinViews`, `InitialCameraPolicy`).
+- **MapViewController presentation details**: the cluster list and Call / Message sheets, banners, the About screen, the empty-map card's look, the "not on the map" list, and Apple's contact access picker are checked by hand in the simulator. The picker in particular can't be driven from tests; checking it by hand found two bugs a unit test couldn't have (its completion runs off the main thread, and sharing more contacts posts no change notification). Its loading, refresh, retry, pruning and location logic *is* tested (`MapViewControllerTests`), as are the pieces it delegates to (`ContactChangeCoalescer`, `ClusterTapResolver`, `ContactPinViews`, `InitialCameraPolicy`).
 - **MKGeocodingRequest networking**: We don't test Apple's geocoding service. `MapKitGeocoder` is the thin, untested adapter around it; everything above the `AddressGeocoding` seam is fully covered.
 
 ## File Structure
@@ -240,5 +251,6 @@ MapMyFriendsTests/
 ├── ReviewFollowUpTests.swift
 ├── MapViewControllerTests.swift
 ├── AppEnvironmentTests.swift
+├── ReviewDecisionTests.swift
 └── NoDataExfiltrationTests.swift
 ```

@@ -23,7 +23,10 @@ Code available at https://github.com/mfyameen/MapMyFriends
 - **Contact photo pins** — Contacts with a photo appear as their circular photo in a white ring, with their name underneath like the blue markers; everyone else gets the blue person marker. Both kinds cluster together
 - **Pin clustering** — MapKit's native clustering groups nearby pins; tapping a cluster zooms in to reveal members
 - **Same-location clusters** — When contacts share an address, or the map is already zoomed all the way in, tapping the cluster lists every member, sorted by name, instead of zooming further
-- **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter. After the launch view the map never moves on its own
+- **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter. Location permission is asked for only after the pins are on the map, not alongside the Contacts prompt. After the launch view, or as soon as you pan or zoom, the map never moves on its own
+- **Empty map card** — When no contact has an address, a card says so instead of leaving a blank map; with limited Contacts access it explains that only shared contacts are visible and opens Apple's in-app picker to share more (`ContactAccessPickerHost`), then reloads
+- **Not on the map** — When some addresses couldn't be placed, a "N not on the map" button lists those contacts with the reason (address not found, or couldn't reach Apple Maps); tapping one opens it in Contacts, editable, so the address can be fixed
+- **VoiceOver** — Pins read as name, label and address; clusters read as "N contacts" with a hint
 - **Proximity sorting** — Cached contacts are delivered nearest-first so nearby pins appear on the map before distant ones
 - **Callout actions** — Tap any pin to open the contact in the Contacts app, or (via Settings) show Call/Message options
 - **Live contact sync** — Listens for `CNContactStoreDidChange` and diffs contacts to add/remove only changed pins; changes are debounced and deferred until the first geocoding pass finishes
@@ -48,7 +51,7 @@ Code available at https://github.com/mfyameen/MapMyFriends
 3. Select a development team under **Signing & Capabilities**
 4. Build and run on a simulator or device
 
-The app will prompt for Contacts and Location permissions on first launch.
+The app asks for Contacts permission on first launch, then for Location once your contacts are on the map.
 
 ## Architecture
 
@@ -70,12 +73,16 @@ MapMyFriends/
 │   └── GeocodingManager.swift       # Sequential geocoding, run summary & proximity sort
 ├── Models/
 │   ├── MappedContact.swift          # Contact + coordinate + thumbnail + phone number
+│   ├── UnmappedContact.swift        # An address that isn't on the map, and why
 │   └── CachedCoordinate.swift       # Codable lat/lng/timestamp (+ legacy failed flag)
 ├── Views/
 │   ├── AboutView.swift              # SwiftUI About page with app icon & GitHub link
 │   ├── ContactAnnotation.swift      # MKAnnotation wrapper
 │   ├── ContactAnnotationView.swift  # Blue person pin with reuse-safe styling
 │   ├── ContactPhotoAnnotationView.swift # Circular photo pin for contacts with a photo
+│   ├── EmptyMapCardView.swift       # "No addresses yet" card over the map
+│   ├── UnmappedContactsView.swift   # SwiftUI list behind the "N not on the map" button
+│   ├── ContactAccessPickerHost.swift # Presents Apple's picker to share more contacts
 │   ├── ContactPinViews.swift        # Registers the map's views and picks one per annotation
 │   ├── ClusterAnnotationView.swift  # Circle with count badge
 │   └── MapViewControllerWrapper.swift # UIViewControllerRepresentable bridge
@@ -95,8 +102,10 @@ MapMyFriends/
 - **Incremental persistence** — Cache saves to disk every 10 geocodes during sequential processing, protecting partial progress.
 - **Cache location** — `CacheManager.defaultFileURL()` is in Application Support, and every save sets `isExcludedFromBackup`. The cache can be rebuilt and holds every contact's address, so it follows Apple's data-storage guidance and doesn't survive in iCloud backups after the app is deleted. Builds that kept it in Documents are migrated on first launch (`migrateLegacyFile`), keeping the newer file if both exist.
 - **Cache pruning** — After every complete, successful contact fetch, `GeocodingManager.forgetAddresses(notIn:)` drops cache entries for addresses no longer in Contacts, so a deleted contact's address doesn't linger on disk. Failed or denied fetches never prune.
-- **The map moves on its own once** — `InitialCameraPolicy` allows one launch view: centered on the first location fix, or framing every contact when there's no location. Later geocoding runs (contact edits, foreground retries) never move the camera. Location updates stop after the first fix; the map tracks the blue dot itself.
-- **Sequential geocoding with delay** — Addresses are geocoded one at a time with a 0.15s delay. When Apple still throttles (`MKError.loadingThrottled`), the same address is retried up to 4 times with exponential backoff (5s, 10s, 20s, 40s) before it is reported as failed for this run. The walk is a loop rather than per-address recursion, so a synchronous geocoder can't build a deep stack.
+- **The map moves on its own once** — `InitialCameraPolicy` allows one launch view: centered on the first location fix, or framing every contact when there's no location. Later geocoding runs (contact edits, foreground retries) never move the camera, and once the user pans, zooms, rotates or taps a cluster (`userDidMoveMap()`, fed by listen-only gesture recognizers) it never moves on its own at all. Location updates stop after the first fix; the map tracks the blue dot itself.
+- **Permission order** — `MapViewController` asks for Contacts at launch and for Location (`requestLocationIfNeeded()`) only once a complete contacts load has finished: after the first geocoding run, or straight away when there are no addresses. A denied or failed contacts fetch doesn't ask. If Location was granted on an earlier launch, setting the delegate starts updates without a prompt.
+- **Unmapped report** — Every geocoding run returns `Summary.unmapped`: each address that didn't make it onto the map, with an `UnmappedContact.Reason`. The controller keeps them keyed like pins, drops them when they map or the contact is deleted, and shows the count and list.
+- **Sequential geocoding with delay** — Addresses are geocoded one at a time with a 0.15s delay. The first time Apple throttles (`MKError.loadingThrottled`), the rest of that run slows to one lookup per 1.3s (about Apple's limit); the next run starts fast again. The throttled address itself is retried up to 4 times with exponential backoff (5s, 10s, 20s, 40s) before it is reported as failed for this run. The walk is a loop rather than per-address recursion, so a synchronous geocoder can't build a deep stack.
 - **Runs are versioned** — Every `process()`/`cancel()` bumps a run ID. A geocode response or delayed step from a cancelled run is dropped, so a contact refresh can't resurrect deleted contacts, duplicate pins, or report completion twice.
 - **Only plottable coordinates** — A NaN or out-of-range coordinate is treated as a failed geocode, and the cache refuses NaN (which would make the whole JSON file unencodable).
 - **Unreadable cache is never clobbered** — If the cache file exists but can't be read (e.g. still locked by Data Protection), lookups retry the read and saves are skipped until it succeeds, so one bad launch can't wipe every cached location.
@@ -114,7 +123,7 @@ MapMyFriends/
 
 ## How It Works
 
-1. **Launch** → `MapMyFriendsApp` registers feature flag defaults; `MapViewController` requests contacts permission and subscribes to `CNContactStoreDidChange`
+1. **Launch** → `MapMyFriendsApp` registers feature flag defaults; `MapViewController` requests contacts permission and subscribes to `CNContactStoreDidChange`. Location permission is requested once the first load has finished
 2. **Fetch** → `ContactsManager` enumerates all contacts with postal addresses, thumbnails, and phone numbers on a background thread
 3. **Cache check** → `GeocodingManager` classifies each address in a single lookup: valid cache hit (resolve immediately), expired hit (resolve immediately at the old coordinate, then refresh), or cache miss (geocode). Legacy `failed: true` entries count as misses so they are retried
 4. **Sort** → Cache hits are sorted by proximity to user location so nearby pins appear first
@@ -127,7 +136,7 @@ MapMyFriends/
 
 ## Tests
 
-The project includes 226 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, and the app itself stays idle while it hosts the tests, so the whole suite runs offline.
+The project includes 253 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, and the app itself stays idle while it hosts the tests, so the whole suite runs offline.
 
 ```
 MapMyFriendsTests/
@@ -159,6 +168,7 @@ MapMyFriendsTests/
 ├── ReviewFollowUpTests.swift            # Cluster list order, pin image caching, not-found memory, name formatting
 ├── MapViewControllerTests.swift         # The real controller with fake contacts/location: loads, refreshes, retries
 ├── AppEnvironmentTests.swift            # The app stays idle while hosting the tests
+├── ReviewDecisionTests.swift            # Map-moved rule, throttle pacing, unmapped report, VoiceOver labels
 └── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 
@@ -198,6 +208,10 @@ User-configurable options are available in **iOS Settings → Map My Friends**:
 - Bundle ID `com.Rosedale.MapMyFriends`, published by Rosedale Co
 - Listing copy, review notes, and privacy answers: [`AppStore/listing.md`](AppStore/listing.md)
 - Privacy policy and support pages live in [`docs/`](docs/) and are served by GitHub Pages at https://mfyameen.github.io/MapMyFriends/
+
+## Archive
+
+Older planning documents (original spec, implementation and test plans, security fixes) are kept in [`archive/`](archive/) for history. They are not kept up to date.
 
 ## License
 

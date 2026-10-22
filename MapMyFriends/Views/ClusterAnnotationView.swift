@@ -26,6 +26,11 @@ class ClusterAnnotationView: MKAnnotationView {
         countLabel.textColor = .white
         countLabel.font = .boldSystemFont(ofSize: 15)
         addSubview(countLabel)
+
+        isAccessibilityElement = true
+        accessibilityHint = "Double-tap to zoom in or see who's here."
+        accessibilityTraits = .button
+        updateCount()
     }
 
     @available(*, unavailable)
@@ -35,9 +40,14 @@ class ClusterAnnotationView: MKAnnotationView {
 
     override var annotation: (any MKAnnotation)? {
         didSet {
-            if let cluster = annotation as? MKClusterAnnotation {
-                countLabel.text = "\(cluster.memberAnnotations.count)"
-            }
+            updateCount()
         }
+    }
+
+    private func updateCount() {
+        guard let cluster = annotation as? MKClusterAnnotation else { return }
+        let count = cluster.memberAnnotations.count
+        countLabel.text = "\(count)"
+        accessibilityLabel = count == 1 ? "1 contact" : "\(count) contacts"
     }
 }

@@ -7,6 +7,8 @@ import CoreLocation
 
 /// Contact store access for `MapViewController`: `ContactsManager` in the app, a fake in tests.
 protocol ContactFetching {
+    /// The user shared only some contacts (iOS limited access).
+    var hasLimitedAccess: Bool { get }
     func requestAccessAndFetch(completion: @escaping @MainActor @Sendable (ContactsManager.FetchResult) -> Void)
 }
 

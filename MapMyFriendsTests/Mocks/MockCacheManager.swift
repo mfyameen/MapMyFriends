@@ -24,9 +24,12 @@ class MockCacheManager: CacheManaging {
         storage[address] = coordinate
     }
 
-    func retainOnly(_ addresses: Set<String>) {
+    @discardableResult
+    func retainOnly(_ addresses: Set<String>) -> Int {
+        let before = storage.count + expiredStorage.count
         storage = storage.filter { addresses.contains($0.key) }
         expiredStorage = expiredStorage.filter { addresses.contains($0.key) }
+        return before - storage.count - expiredStorage.count
     }
 
     func saveToDisk() {

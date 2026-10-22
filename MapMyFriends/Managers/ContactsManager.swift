@@ -95,6 +95,10 @@ class ContactsManager {
 
         var results: [RawContactAddress] = []
         for labeledAddress in contact.postalAddresses {
+            // A country on its own isn't somewhere to put a pin: iOS fills it in as soon as an
+            // address is started, and geocoding it lands in the middle of the country.
+            guard hasLocalDetail(labeledAddress.value) else { continue }
+
             let label: String
             if let rawLabel = labeledAddress.label {
                 label = CNLabeledValue<NSString>.localizedString(forLabel: rawLabel)
@@ -115,6 +119,12 @@ class ContactsManager {
             ))
         }
         return results
+    }
+
+    /// Whether the address says anything more specific than a country.
+    nonisolated static func hasLocalDetail(_ address: CNPostalAddress) -> Bool {
+        [address.street, address.subLocality, address.city, address.subAdministrativeArea, address.state, address.postalCode]
+            .contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// The name a pin shows. Company-only and nickname-only contacts still have an

@@ -15,7 +15,9 @@ protocol CacheManaging {
     func store(coordinate: CachedCoordinate, for address: String)
     /// Drops every entry whose address isn't in `addresses`, so a deleted contact's
     /// address doesn't stay on disk.
-    func retainOnly(_ addresses: Set<String>)
+    /// - Returns: How many entries were dropped.
+    @discardableResult
+    func retainOnly(_ addresses: Set<String>) -> Int
     func saveToDisk()
 }
 
@@ -130,10 +132,13 @@ class CacheManager: CacheManaging {
         queue.sync { cache[address] = coordinate }
     }
 
-    func retainOnly(_ addresses: Set<String>) {
+    @discardableResult
+    func retainOnly(_ addresses: Set<String>) -> Int {
         queue.sync {
             reloadIfNeeded()
+            let before = cache.count
             cache = cache.filter { addresses.contains($0.key) }
+            return before - cache.count
         }
     }
 

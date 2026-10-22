@@ -44,11 +44,29 @@ class GeocodingManager {
     /// Called immediately before `onComplete` with the full breakdown of the run.
     var onSummary: ((Summary) -> Void)?
 
-    /// One address to geocode. A refresh already has a pin (from an expired cache entry),
-    /// so its result only updates the cache.
+    /// One lookup: an address string and every contact who has it (coworkers, family), so a
+    /// shared address costs one request against Apple's rate limit, not one per person.
+    /// A refresh already has its pins (from an expired cache entry), so its result only
+    /// updates the cache.
     private struct Job {
-        let address: ContactsManager.RawContactAddress
+        let addresses: [ContactsManager.RawContactAddress]
         let isRefresh: Bool
+
+        var addressString: String { addresses[0].addressString }
+    }
+
+    /// The lookups for one run, plus how many contacts are done after each, so progress
+    /// reads "Mapping N of M contacts" rather than counting lookups.
+    private struct Plan {
+        let jobs: [Job]
+        let contactsDoneAfter: [Int]
+        var totalContacts: Int { contactsDoneAfter.last ?? 0 }
+
+        init(_ jobs: [Job]) {
+            self.jobs = jobs
+            var running = 0
+            contactsDoneAfter = jobs.map { running += $0.addresses.count; return running }
+        }
     }
 
     private let cache: CacheManaging
@@ -95,8 +113,8 @@ class GeocodingManager {
         currentRequestDelay = requestDelay
 
         var resolvedHits: [MappedContact] = []
-        var cacheMisses: [Job] = []
-        var refreshes: [Job] = []
+        var cacheMisses: [ContactsManager.RawContactAddress] = []
+        var refreshes: [ContactsManager.RawContactAddress] = []
 
         for address in addresses {
             // Single lookup per address (no double lookup)
@@ -126,11 +144,11 @@ class GeocodingManager {
                 // right. Show it now rather than hiding the pin until a throttled re-geocode lands.
                 resolvedHits.append(mappedContact(address, at: expired.coordinate))
                 summary.resolvedFromExpiredCache += 1
-                refreshes.append(Job(address: address, isRefresh: true))
+                refreshes.append(address)
                 continue
             }
 
-            cacheMisses.append(Job(address: address, isRefresh: false))
+            cacheMisses.append(address)
         }
 
         // Sort cache hits by proximity to user so nearby pins appear first
@@ -148,20 +166,22 @@ class GeocodingManager {
         }
 
         // Contacts with no pin go first; refreshes only matter once they've all been tried.
-        let jobs = cacheMisses + refreshes
-        guard !jobs.isEmpty else {
+        let plan = Plan(Self.grouped(cacheMisses, isRefresh: false) + Self.grouped(refreshes, isRefresh: true))
+        guard !plan.jobs.isEmpty else {
             finish()
             return
         }
 
-        geocodeSequentially(jobs: jobs, index: 0, attempt: 0, run: run)
+        geocodeSequentially(plan: plan, index: 0, attempt: 0, run: run)
     }
 
     /// Forgets cached locations for addresses no longer in the user's contacts.
     /// - Parameter addresses: A complete, successful fetch — never a partial one.
     func forgetAddresses(notIn addresses: [ContactsManager.RawContactAddress]) {
-        cache.retainOnly(Set(addresses.map(\.addressString)))
-        cache.saveToDisk()
+        // Runs on every refresh; only rewrite the file when something actually went.
+        if cache.retainOnly(Set(addresses.map(\.addressString))) > 0 {
+            cache.saveToDisk()
+        }
     }
 
     func cancel() {
@@ -207,8 +227,21 @@ class GeocodingManager {
         UnmappedContact(contactID: address.contactID, fullName: address.fullName, addressString: address.addressString, reason: reason)
     }
 
-    /// - Parameter attempt: How many times `jobs[index]` has already been throttled.
-    private func geocodeSequentially(jobs: [Job], index: Int, attempt: Int, run: Int) {
+    /// One job per distinct address string, in first-seen order.
+    private static func grouped(_ addresses: [ContactsManager.RawContactAddress], isRefresh: Bool) -> [Job] {
+        var order: [String] = []
+        var byAddress: [String: [ContactsManager.RawContactAddress]] = [:]
+        for address in addresses {
+            if byAddress[address.addressString] == nil {
+                order.append(address.addressString)
+            }
+            byAddress[address.addressString, default: []].append(address)
+        }
+        return order.compactMap { key in byAddress[key].map { Job(addresses: $0, isRefresh: isRefresh) } }
+    }
+
+    /// - Parameter attempt: How many times `plan.jobs[index]` has already been throttled.
+    private func geocodeSequentially(plan: Plan, index: Int, attempt: Int, run: Int) {
         var index = index
         var attempt = attempt
 
@@ -216,13 +249,13 @@ class GeocodingManager {
             // A newer run (or a cancel) took over; this one stops without reporting.
             guard run == runID else { return }
 
-            guard index < jobs.count else {
+            guard index < plan.jobs.count else {
                 cache.saveToDisk()
                 finish()
                 return
             }
 
-            let job = jobs[index]
+            let job = plan.jobs[index]
             let completed = index + 1
 
             // A geocoder that calls back before `geocode` returns advances this loop instead
@@ -231,7 +264,7 @@ class GeocodingManager {
             var isCallbackOnStack = true
             var advanceInLoop: (index: Int, attempt: Int)?
 
-            geocoder.geocode(job.address.addressString) { [weak self] outcome in
+            geocoder.geocode(job.addressString) { [weak self] outcome in
                 // Cancelling doesn't stop a response already on its way; drop it.
                 guard let self, run == self.runID else { return }
 
@@ -252,7 +285,7 @@ class GeocodingManager {
                     next = (index, attempt + 1, self.rateLimitBackoff * pow(2, Double(attempt)))
                 } else {
                     self.record(outcome: outcome, for: job)
-                    self.onProgress?(completed, jobs.count)
+                    self.onProgress?(plan.contactsDoneAfter[index], plan.totalContacts)
 
                     // Persist every 10 geocodes to protect progress if the app is killed
                     if completed % 10 == 0 {
@@ -266,13 +299,13 @@ class GeocodingManager {
                     if isCallbackOnStack {
                         advanceInLoop = (next.index, next.attempt)
                     } else {
-                        self.geocodeSequentially(jobs: jobs, index: next.index, attempt: next.attempt, run: run)
+                        self.geocodeSequentially(plan: plan, index: next.index, attempt: next.attempt, run: run)
                     }
                     return
                 }
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + next.delay) { [weak self] in
-                    self?.geocodeSequentially(jobs: jobs, index: next.index, attempt: next.attempt, run: run)
+                    self?.geocodeSequentially(plan: plan, index: next.index, attempt: next.attempt, run: run)
                 }
             }
 
@@ -286,7 +319,7 @@ class GeocodingManager {
     }
 
     private func record(outcome: GeocodeOutcome, for job: Job) {
-        let address = job.address
+        let addressString = job.addressString
 
         switch outcome {
         case .success(let coordinate) where coordinate.isPlottable:
@@ -295,68 +328,73 @@ class GeocodingManager {
                 lng: coordinate.longitude,
                 cachedAt: Date()
             )
-            cache.store(coordinate: cached, for: address.addressString)
+            cache.store(coordinate: cached, for: addressString)
 
             if job.isRefresh {
                 // Already on the map at the expired coordinate; the new one is used next launch.
-                summary.refreshedExpired += 1
+                summary.refreshedExpired += job.addresses.count
                 return
             }
-            summary.geocoded += 1
-            onContactResolved?(mappedContact(address, at: coordinate))
+            for address in job.addresses {
+                summary.geocoded += 1
+                onContactResolved?(mappedContact(address, at: coordinate))
+            }
 
         case _ where job.isRefresh:
-            // The pin is already showing its last known location. Keep the expired entry
+            // The pins are already showing their last known location. Keep the expired entry
             // and try again next launch.
             break
 
         case .success:
             // NaN or out-of-range coordinate: unplottable, and NaN would make the cache
             // file unencodable. Treat it like any other failed geocode.
-            summary.failed += 1
-            summary.unmapped.append(unmapped(address, .addressNotFound))
+            reportUnmapped(job, .addressNotFound)
             #if DEBUG
-            print("[GeocodingManager] Invalid coordinate for '\(address.addressString)'")
+            print("[GeocodingManager] Invalid coordinate for '\(addressString)'")
             #endif
 
         case .invalidAddress:
             // Deliberately NOT cached as a failure: constructing the request is free
             // (no network call) and can fail for valid addresses due to formatting or
             // encoding quirks. Retry on the next launch.
-            summary.failed += 1
-            summary.invalidAddressStrings += 1
-            summary.unmapped.append(unmapped(address, .addressNotFound))
+            summary.invalidAddressStrings += job.addresses.count
+            reportUnmapped(job, .addressNotFound)
             #if DEBUG
-            print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
+            print("[GeocodingManager] Invalid address string: '\(addressString)'")
             #endif
 
         case .notFound:
             cache.store(
                 coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), notFound: true),
-                for: address.addressString
+                for: addressString
             )
-            summary.failed += 1
-            summary.unmapped.append(unmapped(address, .addressNotFound))
+            reportUnmapped(job, .addressNotFound)
             #if DEBUG
-            print("[GeocodingManager] Not found, won't retry for a day: '\(address.addressString)'")
+            print("[GeocodingManager] Not found, won't retry for a day: '\(addressString)'")
             #endif
 
         case .rateLimited:
             // Still throttled after every retry. Not cached — retry next launch.
-            summary.failed += 1
-            summary.unmapped.append(unmapped(address, .couldNotConnect))
+            reportUnmapped(job, .couldNotConnect)
             #if DEBUG
-            print("[GeocodingManager] Rate limited, giving up for now: '\(address.addressString)'")
+            print("[GeocodingManager] Rate limited, giving up for now: '\(addressString)'")
             #endif
 
         case .failed(let reason):
             // Deliberately NOT cached as a failure. A transient network error or rate limit
             // must not hide this contact until a cache entry expires — retry next launch.
-            summary.failed += 1
-            summary.unmapped.append(unmapped(address, .couldNotConnect))
+            reportUnmapped(job, .couldNotConnect)
             #if DEBUG
-            print("[GeocodingManager] Failed to geocode '\(address.addressString)': \(reason ?? "no results")")
+            print("[GeocodingManager] Failed to geocode '\(addressString)': \(reason ?? "no results")")
             #endif
+        }
+    }
+
+    /// Every contact sharing the job's address failed together.
+    private func reportUnmapped(_ job: Job, _ reason: UnmappedContact.Reason) {
+        for address in job.addresses {
+            summary.failed += 1
+            summary.unmapped.append(unmapped(address, reason))
         }
     }
 }

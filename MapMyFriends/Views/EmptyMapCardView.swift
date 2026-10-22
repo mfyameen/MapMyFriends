@@ -5,16 +5,16 @@
 
 import UIKit
 
-/// Card over the map when no contact has an address, so an empty map doesn't look broken.
-/// With limited Contacts access it explains why and offers to share more contacts.
+/// Card over the map when there's nothing to show, so an empty map doesn't look broken:
+/// no contact has an address, only some contacts are shared, or Contacts access is off.
 final class EmptyMapCardView: UIView {
 
-    /// Called when the user taps "Share More Contacts".
-    var onShareMoreContacts: (() -> Void)?
+    /// Called when the user taps the card's button.
+    var onAction: (() -> Void)?
 
     private let titleLabel = UILabel()
     private let messageLabel = UILabel()
-    private let shareMoreButton = UIButton(configuration: .borderedProminent())
+    private let actionButton = UIButton(configuration: .borderedProminent())
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -41,11 +41,10 @@ final class EmptyMapCardView: UIView {
         messageLabel.numberOfLines = 0
         messageLabel.textAlignment = .center
 
-        shareMoreButton.configuration?.title = "Share More Contacts"
-        shareMoreButton.configuration?.cornerStyle = .capsule
-        shareMoreButton.addAction(UIAction { [weak self] _ in self?.onShareMoreContacts?() }, for: .primaryActionTriggered)
+        actionButton.configuration?.cornerStyle = .capsule
+        actionButton.addAction(UIAction { [weak self] _ in self?.onAction?() }, for: .primaryActionTriggered)
 
-        let stack = UIStackView(arrangedSubviews: [titleLabel, messageLabel, shareMoreButton])
+        let stack = UIStackView(arrangedSubviews: [titleLabel, messageLabel, actionButton])
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 8
@@ -70,14 +69,11 @@ final class EmptyMapCardView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(limitedAccess: Bool) {
-        if limitedAccess {
-            titleLabel.text = "No addresses in the contacts you shared"
-            messageLabel.text = "Map My Friends can only see the contacts you chose to share, and none of them have an address."
-        } else {
-            titleLabel.text = "None of your contacts have an address yet"
-            messageLabel.text = "Add an address to a contact in the Contacts app and they'll appear on the map."
-        }
-        shareMoreButton.isHidden = !limitedAccess
+    /// - Parameter actionTitle: The button's title, or `nil` for no button.
+    func configure(title: String, message: String, actionTitle: String?) {
+        titleLabel.text = title
+        messageLabel.text = message
+        actionButton.configuration?.title = actionTitle
+        actionButton.isHidden = actionTitle == nil
     }
 }

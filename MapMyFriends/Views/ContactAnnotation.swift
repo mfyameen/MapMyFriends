@@ -10,7 +10,17 @@ class ContactAnnotation: NSObject, MKAnnotation {
 
     var coordinate: CLLocationCoordinate2D { mappedContact.coordinate }
     var title: String? { mappedContact.fullName }
-    var subtitle: String? { "\(mappedContact.addressLabel) · \(mappedContact.addressString)" }
+    /// Callouts show a single line, so the address's line breaks become commas — otherwise
+    /// everything after the street (city, state) was cut off.
+    var subtitle: String? { "\(mappedContact.addressLabel) · \(oneLineAddress)" }
+
+    var oneLineAddress: String {
+        mappedContact.addressString
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+    }
 
     init(mappedContact: MappedContact) {
         self.mappedContact = mappedContact
@@ -19,10 +29,7 @@ class ContactAnnotation: NSObject, MKAnnotation {
     /// What VoiceOver reads for this pin: name, label and the address with its line breaks
     /// turned into pauses.
     var accessibilityDescription: String {
-        let address = mappedContact.addressString
-            .split(whereSeparator: \.isNewline)
-            .joined(separator: ", ")
-        return "\(mappedContact.fullName), \(mappedContact.addressLabel), \(address)"
+        "\(mappedContact.fullName), \(mappedContact.addressLabel), \(oneLineAddress)"
     }
 
     /// The contact's photo, if it has one that decodes. Decoded once, on first display.

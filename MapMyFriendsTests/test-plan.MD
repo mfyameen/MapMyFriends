@@ -1,7 +1,7 @@
 # MapMyFriends — Test Plan
 
 ## Overview
-The project has 253 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service, and the host app shows a blank screen under tests (`AppEnvironment.isRunningTests`) instead of loading contacts. Most run synchronously; `pendingStepFromCancelledRunDoesNotResume` and the refresh/foreground tests in `MapViewControllerTests` wait briefly for real main-queue scheduling. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `archive/plan.MD`.
+The project has 275 tests in the `MapMyFriendsTests` target using the Swift Testing framework (Xcode 26). Every test runs offline — no test contacts Apple's geocoding service, and the host app shows a blank screen under tests (`AppEnvironment.isRunningTests`) instead of loading contacts. Most run synchronously; `pendingStepFromCancelledRunDoesNotResume` and the refresh/foreground tests in `MapViewControllerTests` wait briefly for real main-queue scheduling. UI tests are deferred since the app is single-screen and behavior is best validated manually per the testing checklist in `archive/plan.MD`.
 
 ## Testability Architecture (implemented)
 The following patterns enable isolated, deterministic testing:
@@ -202,7 +202,17 @@ Changes agreed after the review, each written to fail first.
 
 Three of these passed against the placeholders (the map-moved controller test, "each run starts fast", and the photo pin name not being read twice), so each was checked by breaking the behaviour on purpose and confirming the test failed. That check exposed that the controller tests' map had zero size, so region changes were ignored and camera assertions could pass by accident; `Session.launch()` now gives the view a phone-sized frame, and both camera tests use a location far from the simulator's.
 
-### 20. Cache Persistence Integration (`CacheIntegrationTests.swift`)
+### 20. Edge Case Tests (`EdgeCaseTests.swift`)
+From the second bug sweep, each written to fail first.
+- **Incomplete addresses**: country-only and whitespace-only addresses aren't mapped; city + country and postal-code-only still are
+- **Callout text**: the subtitle is one line with the city kept (callouts dropped everything after the first line break)
+- **Shared addresses**: contacts at the same address are geocoded once and all get pins; a failed shared address reports every contact; progress counts contacts, not lookups
+- **Cache saves**: forgetting nothing doesn't rewrite the cache file; the real cache reports how many entries it dropped
+- **Phone links**: formatted numbers; extensions dialed after a pause and dropped for Messages; vanity letters on the keypad; non-Latin digits converted; "+" only up front; nothing dialable gives no link
+
+`MapViewControllerTests` also covers: denied access leaves an "access is off" card behind the alert; a stale cached fix isn't used and updates continue; the newest fix in a batch is used; a location denial stops updates; the foreground doesn't refetch just for addresses Apple Maps can't find.
+
+### 21. Cache Persistence Integration (`CacheIntegrationTests.swift`)
 End-to-end test using a real temp file (no mocks).
 - **Write → kill → read**: Create a CacheManager with a temp file, store entries, save, deallocate, create a new instance from the same file, verify all entries are present
 - **Concurrent reads**: Store entries, save, read from multiple threads — verify no crashes (smoke test)

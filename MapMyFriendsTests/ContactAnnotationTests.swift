@@ -26,7 +26,8 @@ struct ContactAnnotationTests {
 
     @Test func subtitleFormat() {
         let annotation = ContactAnnotation(mappedContact: sampleContact)
-        #expect(annotation.subtitle == "Home · 123 Main St\nSan Francisco, CA")
+        // One line: callouts don't show anything after a line break.
+        #expect(annotation.subtitle == "Home · 123 Main St, San Francisco, CA")
     }
 
     @Test func coordinatePassthrough() {

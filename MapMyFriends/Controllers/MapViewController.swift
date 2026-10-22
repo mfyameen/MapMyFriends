@@ -30,14 +30,19 @@ class MapViewController: UIViewController {
     /// Gates contact store changes until the initial geocoding pass has finished.
     private let contactChangeCoalescer = ContactChangeCoalescer()
     private var contactChangeDebounceWorkItem: DispatchWorkItem?
-    /// Some contact addresses aren't on the map because a fetch or geocode failed this
-    /// session. They're retried the next time the app comes to the foreground.
+    /// A contacts fetch failed, or a lookup couldn't reach Apple Maps, this session; retried
+    /// the next time the app comes to the foreground. Addresses Apple Maps can't find don't
+    /// count: they're skipped without a lookup until their not-found entry expires, so a
+    /// foreground refresh would only re-read every contact to skip them again.
     private(set) var hasUnmappedAddresses = false
 
     /// What the empty-map card says, or `nil` when it's hidden.
     enum EmptyState: Equatable {
         /// A complete fetch found no contact with an address.
         case noAddresses(limitedAccess: Bool)
+        /// Contacts access is off. Shown after the denial alert so the map isn't left blank
+        /// with no explanation once it's dismissed.
+        case accessDenied
     }
     /// Set only from complete, successful fetches: denied or failed ones say nothing about
     /// what's in Contacts.
@@ -245,6 +250,7 @@ class MapViewController: UIViewController {
             }
             guard case .success(let rawAddresses) = result, !rawAddresses.isEmpty else {
                 if case .denied = result {
+                    self.emptyState = .accessDenied
                     self.showContactsAccessDeniedAlert()
                 } else if case .failed = result {
                     self.hasUnmappedAddresses = true
@@ -278,7 +284,10 @@ class MapViewController: UIViewController {
                 if rawAddresses.isEmpty {
                     self.requestLocationIfNeeded()
                 }
-            case .denied, .failed:
+            case .denied:
+                // Pins already on the map stay; the card says why nothing new will appear.
+                self.emptyState = .accessDenied
+            case .failed:
                 // Not knowing what's in the store is not the same as it being empty:
                 // leave every pin alone and try again later.
                 self.hasUnmappedAddresses = true
@@ -330,6 +339,9 @@ class MapViewController: UIViewController {
             for contact in summary.unmapped {
                 self.unmappedByKey[contact.key] = contact
             }
+            if summary.unmapped.contains(where: { $0.reason == .couldNotConnect }) {
+                self.hasUnmappedAddresses = true
+            }
         }
 
         geocodingManager.onProgress = { [weak self] completed, total in
@@ -339,9 +351,6 @@ class MapViewController: UIViewController {
 
         geocodingManager.onComplete = { [weak self] failedCount in
             guard let self else { return }
-            if failedCount > 0 {
-                self.hasUnmappedAddresses = true
-            }
             self.hideProgressBanner()
             self.centerOnAnnotationsIfNeeded()
             // The pins are on the map now, so the location prompt has context.
@@ -364,8 +373,17 @@ class MapViewController: UIViewController {
         // the tracking button is bottom-right, so these go at the top.
         emptyCard.translatesAutoresizingMaskIntoConstraints = false
         emptyCard.isHidden = true
-        emptyCard.onShareMoreContacts = { [weak self] in
-            self?.showContactAccessPicker()
+        emptyCard.onAction = { [weak self] in
+            switch self?.emptyState {
+            case .noAddresses(limitedAccess: true):
+                self?.showContactAccessPicker()
+            case .accessDenied:
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            case .noAddresses(limitedAccess: false), nil:
+                break
+            }
         }
         view.addSubview(emptyCard)
 
@@ -422,8 +440,24 @@ class MapViewController: UIViewController {
             return
         }
         switch emptyState {
-        case .noAddresses(let limitedAccess):
-            emptyCard.configure(limitedAccess: limitedAccess)
+        case .noAddresses(limitedAccess: true):
+            emptyCard.configure(
+                title: "No addresses in the contacts you shared",
+                message: "Map My Friends can only see the contacts you chose to share, and none of them have an address.",
+                actionTitle: "Share More Contacts"
+            )
+        case .noAddresses(limitedAccess: false):
+            emptyCard.configure(
+                title: "None of your contacts have an address yet",
+                message: "Add an address to a contact in the Contacts app and they'll appear on the map.",
+                actionTitle: nil
+            )
+        case .accessDenied:
+            emptyCard.configure(
+                title: "Contacts access is off",
+                message: "Map My Friends needs access to your contacts to show them on the map.",
+                actionTitle: "Open Settings"
+            )
         }
         emptyCard.isHidden = false
     }
@@ -682,6 +716,17 @@ extension MapViewController: MKMapViewDelegate {
                 #if DEBUG
                 print("[MapViewController] Failed to fetch contact: \(error)")
                 #endif
+                // Usually deleted since the pin was drawn (the refresh removing it is
+                // debounced). Tapping must not just do nothing.
+                DispatchQueue.main.async {
+                    let alert = UIAlertController(
+                        title: "Couldn't Open Contact",
+                        message: "This contact may have been deleted or is no longer shared with Map My Friends.",
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+                    self?.present(alert, animated: true)
+                }
             }
         }
     }
@@ -698,21 +743,19 @@ extension MapViewController: MKMapViewDelegate {
             return
         }
 
-        let digits = phone.filter { $0.isNumber || $0 == "+" }
-
         let sheet = UIAlertController(title: contact.fullName, message: phone, preferredStyle: .actionSheet)
 
-        sheet.addAction(UIAlertAction(title: "Call", style: .default) { _ in
-            if let url = URL(string: "tel:\(digits)") {
-                UIApplication.shared.open(url)
-            }
-        })
+        if let callURL = PhoneDialer.callURL(for: phone) {
+            sheet.addAction(UIAlertAction(title: "Call", style: .default) { _ in
+                UIApplication.shared.open(callURL)
+            })
+        }
 
-        sheet.addAction(UIAlertAction(title: "Message", style: .default) { _ in
-            if let url = URL(string: "sms:\(digits)") {
-                UIApplication.shared.open(url)
-            }
-        })
+        if let messageURL = PhoneDialer.messageURL(for: phone) {
+            sheet.addAction(UIAlertAction(title: "Message", style: .default) { _ in
+                UIApplication.shared.open(messageURL)
+            })
+        }
 
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
 
@@ -729,8 +772,16 @@ extension MapViewController: MKMapViewDelegate {
 
 extension MapViewController: CLLocationManagerDelegate {
 
+    /// A fix older than this is iOS's last known location — possibly from another city —
+    /// not where the user is now.
+    private static let maxLocationAge: TimeInterval = 60
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.first else { return }
+        // Delivered oldest first; only a fresh, valid fix counts. Keep listening otherwise.
+        guard let location = locations.last,
+              location.horizontalAccuracy >= 0,
+              -location.timestamp.timeIntervalSinceNow < Self.maxLocationAge
+        else { return }
         // One fix is all this manager is for: the launch view and sorting nearby contacts
         // first (via `locationManager.location`). The map tracks the blue dot on its own, so leaving
         // GPS running would only drain the battery.
@@ -742,6 +793,13 @@ extension MapViewController: CLLocationManagerDelegate {
             span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
         )
         mapView.setRegion(region, animated: true)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
+        // `.locationUnknown` is temporary and updates continue; a denial won't recover.
+        if (error as? CLError)?.code == .denied {
+            locationManager.stopUpdatingLocation()
+        }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

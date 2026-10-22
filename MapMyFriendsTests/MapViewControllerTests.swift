@@ -347,12 +347,21 @@ struct MapViewControllerTests {
         #expect(session.controller.emptyState == nil, "An address was added back")
     }
 
-    @Test func deniedOrFailedFetchesDontClaimThereAreNoAddresses() {
-        for result in [ContactsManager.FetchResult.denied, .failed] {
-            let session = Session(fetches: [result])
-            session.launch()
-            #expect(session.controller.emptyState == nil, "\(result) says nothing about what's in Contacts")
-        }
+    @Test func failedFetchDoesNotClaimThereAreNoAddresses() {
+        let session = Session(fetches: [.failed])
+
+        session.launch()
+
+        #expect(session.controller.emptyState == nil, "A failed fetch says nothing about what's in Contacts")
+    }
+
+    @Test func deniedAccessLeavesACardBehindAfterTheAlert() {
+        // Once the alert was dismissed the map was blank forever, with nothing saying why.
+        let session = Session(fetches: [.denied])
+
+        session.launch()
+
+        #expect(session.controller.emptyState == .accessDenied)
     }
 
     // Unmapped contacts button and list (review decision #3)
@@ -417,5 +426,64 @@ struct MapViewControllerTests {
         session.launch()
 
         #expect(session.controller.unmappedContacts.map(\.fullName) == ["adam", "Mia", "Zoe"])
+    }
+    // Second bug sweep
+
+    @Test func staleCachedFixIsNotTreatedAsTheUsersLocation() {
+        // The first fix is often iOS's last known location — possibly yesterday, another city.
+        let session = Session(fetches: [.success([])])
+        session.launch()
+        let stale = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: -45, longitude: 170),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50,
+            timestamp: Date(timeIntervalSinceNow: -3600)
+        )
+
+        session.controller.locationManager(CLLocationManager(), didUpdateLocations: [stale])
+
+        let center = session.controller.mapView.region.center
+        #expect(abs(center.latitude - -45) > 1, "Centered on an hour-old location")
+        #expect(session.location.stopCount == 0, "Keep listening until a fresh fix arrives")
+    }
+
+    @Test func newestFixInABatchIsUsed() {
+        // Core Location delivers oldest first; the last one is current.
+        let session = Session(fetches: [.success([])])
+        session.launch()
+        let old = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 10, longitude: 10),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50,
+            timestamp: Date(timeIntervalSinceNow: -5)
+        )
+        let current = CLLocation(latitude: -45, longitude: 170)
+
+        session.controller.locationManager(CLLocationManager(), didUpdateLocations: [old, current])
+
+        let center = session.controller.mapView.region.center
+        #expect(abs(center.latitude - -45) < 0.5 && abs(center.longitude - 170) < 0.5)
+    }
+
+    @Test func locationDeniedStopsUpdates() {
+        let session = Session(fetches: [.success([])])
+        session.launch()
+
+        session.controller.locationManager(CLLocationManager(), didFailWithError: CLError(.denied))
+
+        #expect(session.location.stopCount == 1)
+    }
+
+    @Test func foregroundDoesNotRefetchJustForAddressesAppleCantFind() async throws {
+        // A known-bad address is skipped without a lookup anyway; re-reading every contact on
+        // every foreground to skip it again was wasted work.
+        let geocoder = MockGeocoder.alwaysSucceeding()
+        geocoder.outcomes["nowhere"] = .notFound
+        let session = Session(fetches: [.success([address("a"), address("nowhere")])], cached: ["a"], geocoder: geocoder)
+        session.launch()
+        #expect(session.controller.isShowingUnmappedButton, "Still listed as not on the map")
+
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        try await settle()
+
+        #expect(session.contacts.fetchCount == 1)
     }
 }

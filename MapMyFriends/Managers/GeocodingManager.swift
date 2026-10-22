@@ -25,6 +25,8 @@ class GeocodingManager {
         var retriedCachedFailures = 0
         /// Expired entries whose coordinate was successfully re-geocoded and re-cached.
         var refreshedExpired = 0
+        /// Subset of `failed` skipped without a request: Apple Maps recently said it can't find them.
+        var skippedNotFound = 0
 
         var attempted: Int { resolvedFromCache + resolvedFromExpiredCache + geocoded + failed }
     }
@@ -87,6 +89,14 @@ class GeocodingManager {
         for address in addresses {
             // Single lookup per address (no double lookup)
             let cached = cache.coordinate(for: address.addressString)
+
+            if cached?.notFound == true {
+                // Apple Maps recently said this address doesn't exist; asking again would only
+                // spend rate-limit budget. Tried again once the entry expires.
+                summary.failed += 1
+                summary.skippedNotFound += 1
+                continue
+            }
 
             if let cached, !cached.failed {
                 resolvedHits.append(mappedContact(address, at: cached.coordinate))
@@ -162,7 +172,7 @@ class GeocodingManager {
         [GeocodingManager] FromCache: \(summary.resolvedFromCache), \
         FromExpiredCache: \(summary.resolvedFromExpiredCache) (refreshed: \(summary.refreshedExpired)), \
         Geocoded: \(summary.geocoded), \
-        Failed: \(summary.failed) (invalid: \(summary.invalidAddressStrings)), \
+        Failed: \(summary.failed) (invalid: \(summary.invalidAddressStrings), known not found: \(summary.skippedNotFound)), \
         RetriedCachedFailures: \(summary.retriedCachedFailures)
         """)
         #endif
@@ -288,6 +298,16 @@ class GeocodingManager {
             summary.invalidAddressStrings += 1
             #if DEBUG
             print("[GeocodingManager] Invalid address string: '\(address.addressString)'")
+            #endif
+
+        case .notFound:
+            cache.store(
+                coordinate: CachedCoordinate(lat: 0, lng: 0, cachedAt: Date(), notFound: true),
+                for: address.addressString
+            )
+            summary.failed += 1
+            #if DEBUG
+            print("[GeocodingManager] Not found, won't retry for a day: '\(address.addressString)'")
             #endif
 
         case .rateLimited:

@@ -15,12 +15,12 @@ class MapViewController: UIViewController {
 
     /// Contact store notifications are coalesced over this window so a burst of edits
     /// triggers a single refresh instead of one per notification.
-    private static let contactChangeDebounceInterval: TimeInterval = 1.0
+    private let contactChangeDebounceInterval: TimeInterval
 
-    private let mapView = MKMapView()
-    private let locationManager = CLLocationManager()
-    private let contactsManager = ContactsManager()
-    private let geocodingManager = GeocodingManager()
+    let mapView = MKMapView()
+    private let locationManager: LocationProviding
+    private let contactsManager: ContactFetching
+    private let geocodingManager: GeocodingManager
 
     private var progressBanner: UIView?
     private var progressLabel: UILabel?
@@ -32,9 +32,29 @@ class MapViewController: UIViewController {
     private var contactChangeDebounceWorkItem: DispatchWorkItem?
     /// Some contact addresses aren't on the map because a fetch or geocode failed this
     /// session. They're retried the next time the app comes to the foreground.
-    private var hasUnmappedAddresses = false
+    private(set) var hasUnmappedAddresses = false
 
     // MARK: - Lifecycle
+
+    /// Every dependency defaults to the real one; tests pass fakes. Defaults are built in the
+    /// body because default-argument expressions can't touch main-actor state.
+    init(
+        contacts: ContactFetching? = nil,
+        geocoding: GeocodingManager? = nil,
+        location: LocationProviding? = nil,
+        contactChangeDebounceInterval: TimeInterval = 1.0
+    ) {
+        self.contactsManager = contacts ?? ContactsManager()
+        self.geocodingManager = geocoding ?? GeocodingManager()
+        self.locationManager = location ?? CLLocationManager()
+        self.contactChangeDebounceInterval = contactChangeDebounceInterval
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -153,7 +173,7 @@ class MapViewController: UIViewController {
 
         contactChangeDebounceWorkItem = workItem
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.contactChangeDebounceInterval,
+            deadline: .now() + contactChangeDebounceInterval,
             execute: workItem
         )
     }
@@ -162,28 +182,26 @@ class MapViewController: UIViewController {
 
     private func loadContacts() {
         contactsManager.requestAccessAndFetch { [weak self] result in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if case .success(let allAddresses) = result {
-                    self.geocodingManager.forgetAddresses(notIn: allAddresses)
-                }
-                guard case .success(let rawAddresses) = result, !rawAddresses.isEmpty else {
-                    if case .denied = result {
-                        self.showContactsAccessDeniedAlert()
-                    } else if case .failed = result {
-                        self.hasUnmappedAddresses = true
-                    }
-                    // No geocoding will run, so unblock refreshes explicitly.
-                    if self.contactChangeCoalescer.noteInitialLoadComplete() {
-                        self.scheduleContactRefresh()
-                    }
-                    return
-                }
-                self.geocodingManager.process(
-                    addresses: rawAddresses,
-                    userLocation: self.locationManager.location?.coordinate
-                )
+            guard let self else { return }
+            if case .success(let allAddresses) = result {
+                self.geocodingManager.forgetAddresses(notIn: allAddresses)
             }
+            guard case .success(let rawAddresses) = result, !rawAddresses.isEmpty else {
+                if case .denied = result {
+                    self.showContactsAccessDeniedAlert()
+                } else if case .failed = result {
+                    self.hasUnmappedAddresses = true
+                }
+                // No geocoding will run, so unblock refreshes explicitly.
+                if self.contactChangeCoalescer.noteInitialLoadComplete() {
+                    self.scheduleContactRefresh()
+                }
+                return
+            }
+            self.geocodingManager.process(
+                addresses: rawAddresses,
+                userLocation: self.locationManager.location?.coordinate
+            )
         }
     }
 
@@ -418,17 +436,16 @@ extension MapViewController: MKMapViewDelegate {
                 message: nil,
                 preferredStyle: .actionSheet
             )
-            for member in members {
-                if let contact = (member as? ContactAnnotation)?.mappedContact {
-                    sheet.addAction(UIAlertAction(title: contact.fullName, style: .default) { [weak self] _ in
-                        // Same behavior as tapping a single pin's info button.
-                        if FeatureFlags.openContactOnPinTap {
-                            self?.openInContacts(contactID: contact.contactID)
-                        } else {
-                            self?.showCallMessageSheet(for: contact, from: view)
-                        }
-                    })
-                }
+            let contacts = ClusterTapResolver.listOrder(members.compactMap { ($0 as? ContactAnnotation)?.mappedContact })
+            for contact in contacts {
+                sheet.addAction(UIAlertAction(title: contact.fullName, style: .default) { [weak self] _ in
+                    // Same behavior as tapping a single pin's info button.
+                    if FeatureFlags.openContactOnPinTap {
+                        self?.openInContacts(contactID: contact.contactID)
+                    } else {
+                        self?.showCallMessageSheet(for: contact, from: view)
+                    }
+                })
             }
             sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             if let popover = sheet.popoverPresentationController {
@@ -523,9 +540,9 @@ extension MapViewController: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.first else { return }
         // One fix is all this manager is for: the launch view and sorting nearby contacts
-        // first (via `manager.location`). The map tracks the blue dot on its own, so leaving
+        // first (via `locationManager.location`). The map tracks the blue dot on its own, so leaving
         // GPS running would only drain the battery.
-        manager.stopUpdatingLocation()
+        locationManager.stopUpdatingLocation()
         guard camera.shouldCenterOnUser() else { return }
 
         let region = MKCoordinateRegion(
@@ -538,7 +555,7 @@ extension MapViewController: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
-            manager.startUpdatingLocation()
+            locationManager.startUpdatingLocation()
         default:
             break
         }

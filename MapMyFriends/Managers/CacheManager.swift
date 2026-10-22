@@ -30,11 +30,15 @@ class CacheManager: CacheManaging {
     /// Failed entries use a shorter TTL so transient failures are retried sooner.
     static let failedTTL: TimeInterval = 24 * 60 * 60 // 24 hours
 
+    /// How long an address Apple Maps couldn't find is remembered before trying again.
+    static let notFoundTTL: TimeInterval = 24 * 60 * 60 // 24 hours
+
     private var cache: [String: CachedCoordinate] = [:]
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.mapmyfriends.cachemanager")
     private let ttl: TimeInterval
     private let failedTtl: TimeInterval
+    private let notFoundTtl: TimeInterval
     /// The file exists but couldn't be read (e.g. still locked by Data Protection). Until a
     /// read succeeds, lookups retry it and saves must not replace it with a partial cache.
     private var needsReload = false
@@ -83,10 +87,16 @@ class CacheManager: CacheManaging {
     }
 
     /// Testable init — accepts a custom file URL and optional TTLs for isolated testing.
-    init(fileURL: URL, ttl: TimeInterval = CacheManager.cacheTTL, failedTtl: TimeInterval = CacheManager.failedTTL) {
+    init(
+        fileURL: URL,
+        ttl: TimeInterval = CacheManager.cacheTTL,
+        failedTtl: TimeInterval = CacheManager.failedTTL,
+        notFoundTtl: TimeInterval = CacheManager.notFoundTTL
+    ) {
         self.fileURL = fileURL
         self.ttl = ttl
         self.failedTtl = failedTtl
+        self.notFoundTtl = notFoundTtl
         loadFromDisk()
     }
 
@@ -97,7 +107,7 @@ class CacheManager: CacheManaging {
             reloadIfNeeded()
             guard let entry = cache[address] else { return nil }
             let age = Date().timeIntervalSince(entry.cachedAt)
-            let limit = entry.failed ? failedTtl : ttl
+            let limit = entry.notFound ? notFoundTtl : entry.failed ? failedTtl : ttl
             if age > limit {
                 return nil
             }
@@ -108,7 +118,8 @@ class CacheManager: CacheManaging {
     func expiredCoordinate(for address: String) -> CachedCoordinate? {
         queue.sync {
             reloadIfNeeded()
-            guard let entry = cache[address], !entry.failed else { return nil }
+            // Only real locations make a fallback pin; failure markers hold a meaningless 0,0.
+            guard let entry = cache[address], !entry.failed, !entry.notFound else { return nil }
             return Date().timeIntervalSince(entry.cachedAt) > ttl ? entry : nil
         }
     }

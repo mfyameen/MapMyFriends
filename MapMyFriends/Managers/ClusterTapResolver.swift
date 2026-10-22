@@ -24,6 +24,18 @@ enum ClusterTapResolver {
         }
     }
 
+    /// The order contacts appear in when a cluster is listed: by name the way people read it
+    /// ("Worker2" before "Worker10", case ignored), then by address so the list is stable.
+    static func listOrder(_ contacts: [MappedContact]) -> [MappedContact] {
+        contacts.sorted { a, b in
+            switch a.fullName.localizedStandardCompare(b.fullName) {
+            case .orderedAscending: true
+            case .orderedDescending: false
+            case .orderedSame: a.addressString.localizedStandardCompare(b.addressString) == .orderedAscending
+            }
+        }
+    }
+
     /// Below this latitude span (~200 m) the map is at or near maximum zoom, so a cluster
     /// that still exists won't split apart however far the user zooms.
     static let maxZoomSpan: CLLocationDegrees = 0.002

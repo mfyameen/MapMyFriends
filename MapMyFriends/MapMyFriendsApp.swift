@@ -15,10 +15,18 @@ struct MapMyFriendsApp: App {
         FeatureFlags.registerDefaults()
     }
 
+    /// The unit tests run inside the app. Building the real screen there would ask for
+    /// contacts and geocode real addresses while the suite runs, so tests get a blank one.
+    static let shouldShowMap = !AppEnvironment.isRunningTests
+
     var body: some Scene {
         WindowGroup {
-            MapViewControllerWrapper()
-                .ignoresSafeArea()
+            if Self.shouldShowMap {
+                MapViewControllerWrapper()
+                    .ignoresSafeArea()
+            } else {
+                Color.clear
+            }
         }
     }
 }

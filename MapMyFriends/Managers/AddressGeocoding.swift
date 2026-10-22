@@ -16,6 +16,9 @@ enum GeocodeOutcome {
     case failed(reason: String?)
     /// Apple throttled the request. The address itself is fine and should be retried.
     case rateLimited
+    /// Apple Maps has no place for this address. A real answer, unlike `.failed`, so it's
+    /// remembered for a while rather than re-requested on every foreground.
+    case notFound
 }
 
 /// Seam over MapKit geocoding so the contact-plotting pipeline can be exercised
@@ -54,8 +57,12 @@ final class MapKitGeocoder: AddressGeocoding {
             }
             return .success(coordinate)
         }
-        if let mapKitError = error as? MKError, mapKitError.code == .loadingThrottled {
-            return .rateLimited
+        if let mapKitError = error as? MKError {
+            switch mapKitError.code {
+            case .loadingThrottled: return .rateLimited
+            case .placemarkNotFound: return .notFound
+            default: break
+            }
         }
         return .failed(reason: error?.localizedDescription)
     }

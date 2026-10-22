@@ -104,7 +104,7 @@ class ContactPhotoAnnotationView: MKAnnotationView {
             rightCalloutAccessoryView = UIButton(type: .detailDisclosure)
         }
 
-        let pin = Self.pinImage(photo: (annotation as? ContactAnnotation)?.photo)
+        let pin = (annotation as? ContactAnnotation)?.photoPinImage ?? Self.placeholderPin
         image = pin
         // Lift the image so the pointer's tip, not its centre, sits on the coordinate.
         centerOffset = CGPoint(x: 0, y: -pin.size.height / 2)
@@ -113,6 +113,9 @@ class ContactPhotoAnnotationView: MKAnnotationView {
         nameLabel.isHidden = isSelected
         setNeedsLayout()
     }
+
+    /// Shown while a reused view has no contact annotation; rendered once.
+    private static let placeholderPin = pinImage(photo: nil)
 
     /// The circular photo in a white ring, with a pointer underneath. Without a photo it
     /// falls back to a person symbol so the pin is never blank.

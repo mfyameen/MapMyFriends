@@ -33,6 +33,7 @@ class ContactsManager {
             CNContactFamilyNameKey as CNKeyDescriptor,
             CNContactOrganizationNameKey as CNKeyDescriptor,
             CNContactNicknameKey as CNKeyDescriptor,
+            CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
             CNContactPostalAddressesKey as CNKeyDescriptor,
             CNContactIdentifierKey as CNKeyDescriptor,
             CNContactThumbnailImageDataKey as CNKeyDescriptor,
@@ -115,9 +116,9 @@ class ContactsManager {
     /// The name a pin shows. Company-only and nickname-only contacts still have an
     /// address worth mapping, so they fall back rather than being dropped.
     nonisolated static func displayName(for contact: CNContact) -> String {
-        let personName = [contact.givenName, contact.familyName]
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        // Follows the user's Contacts display order and each name's own convention (family
+        // name first for Chinese, Japanese and Korean names), with middle names and suffixes.
+        let personName = CNContactFormatter.string(from: contact, style: .fullName) ?? ""
 
         for candidate in [personName, contact.organizationName, contact.nickname] where !candidate.isEmpty {
             return candidate

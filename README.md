@@ -22,7 +22,7 @@ Code available at https://github.com/mfyameen/MapMyFriends
 - **Run summary** — Every geocoding pass logs a breakdown (from cache / geocoded / failed / retried) in DEBUG, even when progress toasts are hidden
 - **Contact photo pins** — Contacts with a photo appear as their circular photo in a white ring, with their name underneath like the blue markers; everyone else gets the blue person marker. Both kinds cluster together
 - **Pin clustering** — MapKit's native clustering groups nearby pins; tapping a cluster zooms in to reveal members
-- **Same-location clusters** — When contacts share an address, or the map is already zoomed all the way in, tapping the cluster lists every member instead of zooming further
+- **Same-location clusters** — When contacts share an address, or the map is already zoomed all the way in, tapping the cluster lists every member, sorted by name, instead of zooming further
 - **User location** — Blue dot shows your current position; map centers on you at launch with a tracking button to recenter. After the launch view the map never moves on its own
 - **Proximity sorting** — Cached contacts are delivered nearest-first so nearby pins appear on the map before distant ones
 - **Callout actions** — Tap any pin to open the contact in the Contacts app, or (via Settings) show Call/Message options
@@ -56,7 +56,9 @@ The app will prompt for Contacts and Location permissions on first launch.
 MapMyFriends/
 ├── MapMyFriendsApp.swift            # SwiftUI app entry point, registers FeatureFlags defaults
 ├── FeatureFlags.swift               # UserDefaults-backed feature flags (Settings.bundle)
+├── AppEnvironment.swift             # Detects when the app is hosting the unit tests
 ├── Controllers/
+│   ├── MapDependencies.swift        # ContactFetching / LocationProviding seams for tests
 │   └── MapViewController.swift      # Root UIKit VC — map, location, clustering, contact actions
 ├── Managers/
 │   ├── AddressGeocoding.swift       # Geocoding protocol seam + MapKitGeocoder implementation
@@ -100,7 +102,11 @@ MapMyFriends/
 - **Unreadable cache is never clobbered** — If the cache file exists but can't be read (e.g. still locked by Data Protection), lookups retry the read and saves are skipped until it succeeds, so one bad launch can't wipe every cached location.
 - **Deferred initial load** — Granting contacts permission fires `CNContactStoreDidChange` mid-geocode. `ContactChangeCoalescer` defers changes until the first pass completes, then collapses them into a single refresh, so the initial run is never cancelled part-way.
 - **Failed fetch is not a deletion** — `ContactsManager` returns `.success`, `.denied`, or `.failed`. Only a complete, successful fetch is diffed; a denied or interrupted fetch leaves every pin alone, and a partial list is never passed off as the whole store.
-- **Every contact with an address gets a pin** — Names fall back from given + family name to company name, then nickname, then "No Name", so business and nickname-only contacts aren't silently skipped.
+- **Every contact with an address gets a pin** — Names come from `CNContactFormatter`, so they follow the user's Contacts display order and each name's convention (family name first for Chinese, Japanese and Korean names) and include middle names and suffixes. They fall back to company name, then nickname, then "No Name", so business and nickname-only contacts aren't silently skipped.
+- **Addresses Apple Maps can't find are remembered for a day** — `MKError.placemarkNotFound` becomes `GeocodeOutcome.notFound` and a `notFound` cache entry (24h TTL). Until it expires the address is counted as unmapped without another request, so foreground retries don't spend rate-limit budget on it. Network and server failures are still never cached, and a not-found answer never replaces a known location.
+- **Photo pins are drawn once per contact** — `ContactAnnotation.photoPinImage` renders lazily and is reused every time MapKit recycles the view.
+- **Tests don't run the app** — The tests are hosted in the app, so `MapMyFriendsApp` shows a blank screen when `AppEnvironment.isRunningTests`; otherwise the host would request contacts and geocode real addresses during the suite.
+- **Injectable controller** — `MapViewController` takes its contact store (`ContactFetching`), geocoding manager, location manager (`LocationProviding`) and debounce interval in `init`, all defaulting to the real ones, so tests drive the real controller with fakes.
 - **Contact diffing** — `ContactDiffer` computes a minimal diff to add/remove only changed pins. Identity covers everything a pin displays (contact ID, address, name, label, phone), so renaming a contact or changing their number updates the pin.
 - **Reuse-safe annotation views** — `ContactAnnotationView` and `ContactPhotoAnnotationView` re-apply styling in `init`, `prepareForReuse`, and `annotation didSet` to prevent red pin artifacts during cluster transitions and stop a reused photo pin from showing the previous contact's photo. Each has its own reuse identifier, chosen by `ContactAnnotation.pinReuseIdentifier`.
 - **Photo pins are drawn, not glyphs** — `MKMarkerAnnotationView` renders `glyphImage` as a one-colour template, so a contact photo used as a glyph comes out as a plain white disc. `ContactPhotoAnnotationView` is a plain `MKAnnotationView` that renders the photo (aspect-filled, clipped to a circle) into its own image, with `centerOffset` putting the pointer's tip on the coordinate.
@@ -121,7 +127,7 @@ MapMyFriends/
 
 ## Tests
 
-The project includes 194 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, so the whole suite runs offline and without waiting.
+The project includes 226 tests using the Swift Testing framework. No test reaches Apple's geocoding service: anything that can trigger a geocode is wired to `MockGeocoder`, which answers synchronously, and the app itself stays idle while it hosts the tests, so the whole suite runs offline.
 
 ```
 MapMyFriendsTests/
@@ -150,6 +156,9 @@ MapMyFriendsTests/
 ├── PhotoPinTests.swift                  # Photo pin choice, rendering (pixel-checked), name label, reuse, live photo changes
 ├── PinWiringTests.swift                 # View registration and per-annotation view choice on a real MKMapView
 ├── ReviewFixTests.swift                 # Camera policy, cache location/migration/backup exclusion, cache pruning
+├── ReviewFollowUpTests.swift            # Cluster list order, pin image caching, not-found memory, name formatting
+├── MapViewControllerTests.swift         # The real controller with fake contacts/location: loads, refreshes, retries
+├── AppEnvironmentTests.swift            # The app stays idle while hosting the tests
 └── NoDataExfiltrationTests.swift        # Verifies no sensitive data leaks
 ```
 
